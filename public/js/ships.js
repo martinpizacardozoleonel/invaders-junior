@@ -1,0 +1,424 @@
+/* ══ DISEÑOS DE NAVES ENEMIGAS ═══════════════════════════════════════════
+   Un único lugar donde se dibujan las naves, para que el modo de un jugador
+   y el multijugador se vean IGUALES.
+
+- DISEÑOS[0..4]  → un modelo por nivel (1 HTML, 2 CSS, 3 JS, 4 jefe final,
+                       5 jefe CSS).
+   - EnemyShips.draw()        dibuja la nave.
+   - EnemyShips.drawLabel()   dibuja el texto legible dentro de la nave con
+                               la skin de etiqueta que tenga equipada el
+                               jugador (la comprada en la tienda).
+   Las rutas están normalizadas en un lienzo de 100x100 y se escalan al
+   tamaño que pida cada juego, así sirve para cualquier resolución.        */
+
+/* ══ SKINS DE ETIQUETAS ═══════════════════════════════════════════════════
+   Cómo se ve la cajita con el texto de la nave enemiga. Cada skin dice de
+   qué color es la caja, el borde y las letras, con qué tipografía se escriben
+   y si tienen algo que se mueva.
+
+   - bg / border / color / stroke → los cuatro colores de la etiqueta.
+   - font  → la familia de la letra (si no, la de siempre).
+   - weight→ el grosor de la letra.
+   - glow  → el brillo que lleva el borde.
+   - hue   → las letras cambian de color con el tiempo (arcoíris).
+   - anim  → el borde late con el tiempo.
+
+   El mismo catálogo que usa la tienda (el servidor lo manda en /api/shop).
+   Está duplicado acá a propósito para poder pintar sin esperar al servidor. */
+const LABEL_SKINS=[
+  { id:'default',   name:'Clásica',     price:0,     bg:'rgba(0,0,0,.86)',    border:'rgba(255,255,255,.35)', color:'#ffffff', stroke:'rgba(0,0,0,.9)' },
+  { id:'neon',      name:'💙 Neón',     price:2000,  bg:'rgba(0,40,70,.86)',  border:'#00e5ff', color:'#e0faff', stroke:'#00364a', glow:'#00e5ff', anim:1 },
+  { id:'pixel',     name:'🕹️ Pixel',   price:6000,  bg:'#101820',            border:'#ffd600', color:'#ffd600', stroke:'#000000', glow:'#ffd600', font:'"Courier New", monospace' },
+  { id:'minecraft', name:'⛏️ Bloque',   price:12000, bg:'rgba(18,18,18,.92)', border:'#8bc34a', color:'#ffffff', stroke:'#000000', glow:'#8bc34a', weight:900, font:'"Trebuchet MS", Verdana, sans-serif' },
+  { id:'oro',       name:'👑 Dorada',   price:25000, bg:'rgba(40,26,0,.9)',   border:'#ffd600', color:'#ffe082', stroke:'#3a2600', glow:'#ffd600', font:'Georgia, serif', weight:700 },
+  { id:'hacker',    name:'💻 Hacker',   price:40000, bg:'#04120a',            border:'#00ff66', color:'#00ff66', stroke:'#00220f', glow:'#00ff66', font:'"Courier New", monospace' },
+  { id:'arcoiris',  name:'🌈 Arcoíris', price:60000, bg:'rgba(10,0,25,.88)',  border:'#e040fb', color:'#ff80ab', stroke:'#1a0033', glow:'#e040fb', hue:1 },
+  { id:'infernol',  name:'🔥 Infernal', price:90000, bg:'rgba(45,10,0,.9)',   border:'#ff6d00', color:'#ffca28', stroke:'#2b0600', glow:'#ff6d00', anim:1, hue:1 },
+  // ── Etiquetas con movimiento (fx). El efecto se aplica a la caja: la
+  // orbita, la sacude, la inclina, la hace rebotar, etc.
+  { id:'orbita',   name:'🪐 Órbita',      price:14000, bg:'rgba(10,20,40,.86)', border:'#64ffda', color:'#b2dfdb', stroke:'#00201c', glow:'#64ffda', fx:'orbita' },
+  { id:'temblor',  name:'📳 Temblor',     price:18000, bg:'rgba(40,0,20,.86)',  border:'#ff4081', color:'#f8bbd0', stroke:'#2b0014', glow:'#ff4081', fx:'temblor' },
+  { id:'inclinar', name:'📐 Inclinada',   price:21000, bg:'rgba(20,10,45,.88)', border:'#b388ff', color:'#e1bee7', stroke:'#14062e', glow:'#b388ff', fx:'inclinar' },
+  { id:'rebote',   name:'⛹️ Rebote',      price:24000, bg:'rgba(0,30,25,.88)',  border:'#69f0ae', color:'#c8f7dc', stroke:'#00221b', glow:'#69f0ae', fx:'rebote' },
+  { id:'latido',   name:'💓 Latido',     price:28000, bg:'rgba(45,0,20,.9)',   border:'#ff5252', color:'#ffcdd2', stroke:'#2b0009', glow:'#ff5252', fx:'latido', anim:1 },
+  { id:'flotar',   name:'🫧 Flotante',   price:32000, bg:'rgba(0,25,45,.86)',  border:'#4dd0e1', color:'#e0f7fa', stroke:'#001f2b', glow:'#4dd0e1', fx:'flotar' },
+  { id:'girar',    name:'🌀 Giratoria',  price:38000, bg:'rgba(15,5,35,.88)',  border:'#e040fb', color:'#f3e5f5', stroke:'#0e0026', glow:'#e040fb', fx:'girar' },
+  { id:'electrica', name:'⚡ Eléctrica',  price:45000,  bg:'rgba(35,35,0,.86)',  border:'#ffea00', color:'#fff9c4', stroke:'#1f1f00', glow:'#ffea00', fx:'electrica', anim:1 },
+  { id:'espejo',   name:'🪞 Espejo',     price:52000, bg:'rgba(5,5,25,.88)',  border:'#82b1ff', color:'#e8eaf6', stroke:'#000a1f', glow:'#82b1ff', fx:'espejo' },
+  { id:'pulso',    name:'💠 Pulso',      price:60000, bg:'rgba(0,40,45,.86)',  border:'#26e5f2', color:'#c7f9ff', stroke:'#00232b', glow:'#26e5f2', fx:'pulso', anim:1, hue:1 },
+  { id:'deslizar', name:'🎯 Deslizante', price:70000, bg:'rgba(30,15,0,.88)',  border:'#ffab40', color:'#ffe0b2', stroke:'#1f0d00', glow:'#ffab40', fx:'deslizar' },
+  { id:'glitch',   name:'📺 Glitch',     price:85000, bg:'#0d0000',           border:'#ff0033', color:'#ff4d6d', stroke:'#000000', glow:'#ff0033', font:'"Courier New", monospace', fx:'glitch' },
+  { id:'matrix',   name:'💚 Matrix',     price:100000,bg:'#001100',           border:'#00ff66', color:'#00ff66', stroke:'#000000', glow:'#00ff66', font:'"Courier New", monospace', fx:'matrix', anim:1 },
+  { id:'supernova',name:'💥 Supernova',  price:125000,bg:'rgba(45,0,0,.86)',   border:'#ff6d00', color:'#fff3e0', stroke:'#2b0000', glow:'#ff6d00', fx:'supernova', anim:1, hue:1 },
+  { id:'nexus',    name:'🌌 Nexus',      price:160000,bg:'rgba(8,0,25,.9)',    border:'#7c4dff', color:'#d1c4e9', stroke:'#060019', glow:'#7c4dff', fx:'nexus', anim:1, hue:1 }
+];
+const labelSkinById=id=>LABEL_SKINS.find(s=>s.id===id)||LABEL_SKINS[0];
+// La skin equipada. Se escribe con EnemyShips.setLabelSkin() desde la tienda y
+// drawLabel la usa sola, así el modo de un jugador y el multijugador muestran
+// las etiquetas iguales sin que nadie pase nada extra.
+let equippedLabelSkin='default';
+
+const EnemyShips=(()=>{
+  // Cada diseño: id, nombre, colores y las partes que lo componen.
+  const DISEÑOS=[
+    { id:'html',   nombre:'Nave HTML',   body:'#c62828', dark:'#7f1d1d', light:'#ff8a80', glow:'#ff1744', cat:'HTML' },
+    { id:'css',    nombre:'Nave CSS',    body:'#1565c0', dark:'#0d3b8f', light:'#82b4ff', glow:'#40c4ff', cat:'CSS'  },
+    { id:'js',     nombre:'Nave JS',     body:'#2e7d32', dark:'#14532d', light:'#a5d6a7', glow:'#00e676', cat:'JS'   },
+    { id:'boss',   nombre:'Jefe Final',  body:'#6a1b9a', dark:'#2a0a3a', light:'#ce93d8', glow:'#a020f0', cat:'JS'   },
+    { id:'bossCss',nombre:'Jefe CSS',    body:'#264de4', dark:'#0d47a1', light:'#90caf9', glow:'#1976d2', cat:'CSS'  }
+  ];
+  const byId=id=>DISEÑOS.find(d=>d.id===id)||DISEÑOS[0];
+  // El multijugador sortea un modelo al azar para que cada nave se vea
+  // distinta a las de al lado.
+  const random=()=>DISEÑOS[Math.floor(Math.random()*DISEÑOS.length)];
+
+  // Un borde claro alrededor de la nave: sin esto los brillos se comen la
+  // forma y todas se ven iguales.
+  function edge(ctx,d,w,h){
+    ctx.shadowColor='rgba(0,0,0,.85)'; ctx.shadowBlur=0;
+    ctx.strokeStyle='rgba(255,255,255,.55)'; ctx.lineWidth=1.2;
+    ctx.stroke();
+  }
+  function glow(ctx,d,blur){ ctx.shadowColor=d.glow; ctx.shadowBlur=blur==null?9:blur; }
+  function noGlow(ctx){ ctx.shadowBlur=0; }
+
+  // ── Naves ──────────────────────────────────────────────────────────────
+  // Cada función dibuja centrada en (x,y) dentro de un cuadro w x h. La
+  // silueta grande va siempre en `dark` y los detalles en `body`, para que se
+  // reconozca el modelo aunque el brillo se coma un poco de contraste.
+  const bodies={
+    // 1 · HTML — Portanaves: punta abajo, alas anchas y cabina adelante
+    html(ctx,x,y,w,h,d){
+      glow(ctx,d,9);
+      // alas (lo primero, para que queden atrás)
+      ctx.fillStyle=d.dark;
+      ctx.beginPath();
+      ctx.moveTo(x,y-h*.10); ctx.lineTo(x-w*.5,y+h*.10); ctx.lineTo(x-w*.5,y+h*.30);
+      ctx.lineTo(x-w*.18,y+h*.20); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x,y-h*.10); ctx.lineTo(x+w*.5,y+h*.10); ctx.lineTo(x+w*.5,y+h*.30);
+      ctx.lineTo(x+w*.18,y+h*.20); ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      // fuselaje
+      noGlow(ctx);
+      ctx.fillStyle=d.body;
+      ctx.beginPath();
+      ctx.moveTo(x,y+h*.5);
+      ctx.lineTo(x-w*.19,y+h*.02);
+      ctx.lineTo(x-w*.19,y-h*.34);
+      ctx.lineTo(x-w*.09,y-h*.48);
+      ctx.lineTo(x+w*.09,y-h*.48);
+      ctx.lineTo(x+w*.19,y-h*.34);
+      ctx.lineTo(x+w*.19,y+h*.02);
+      ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      // cabina
+      ctx.fillStyle=d.light;
+      ctx.beginPath(); ctx.ellipse(x,y-h*.24,w*.1,h*.13,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#fff';
+      ctx.beginPath(); ctx.ellipse(x,y-h*.27,w*.045,h*.055,0,0,Math.PI*2); ctx.fill();
+      // motor
+      ctx.fillStyle='#ffca28';
+      ctx.beginPath(); ctx.ellipse(x,y+h*.36,w*.075,h*.07,0,0,Math.PI*2); ctx.fill();
+    },
+    // 2 · CSS — Escudo con el símbolo de las llaves del navegador
+    css(ctx,x,y,w,h,d){
+      glow(ctx,d,9);
+      ctx.fillStyle=d.dark;
+      ctx.beginPath();
+      ctx.moveTo(x,y-h*.5);
+      ctx.lineTo(x+w*.40,y-h*.30);
+      ctx.lineTo(x+w*.40,y+h*.16);
+      ctx.lineTo(x,y+h*.5);
+      ctx.lineTo(x-w*.40,y+h*.16);
+      ctx.lineTo(x-w*.40,y-h*.30);
+      ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      noGlow(ctx);
+      // placa con las llaves { }
+      ctx.fillStyle=d.body;
+      ctx.beginPath();
+      ctx.moveTo(x,y-h*.42);
+      ctx.lineTo(x+w*.32,y-h*.26);
+      ctx.lineTo(x+w*.32,y+h*.12);
+      ctx.lineTo(x,y+h*.42);
+      ctx.lineTo(x-w*.32,y+h*.12);
+      ctx.lineTo(x-w*.32,y-h*.26);
+      ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      ctx.strokeStyle=d.light; ctx.lineWidth=Math.max(1.5,w*.045); ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(x+w*.09,y-h*.20); ctx.lineTo(x-w*.01,y-h*.08);
+      ctx.lineTo(x-w*.01,y+h*.08); ctx.lineTo(x+w*.09,y+h*.20);
+      ctx.moveTo(x-w*.09,y-h*.20); ctx.lineTo(x+w*.01,y-h*.08);
+      ctx.lineTo(x+w*.01,y+h*.08); ctx.lineTo(x-w*.09,y+h*.20);
+      ctx.stroke();
+      // remaches
+      ctx.fillStyle='#ffca28';
+      ctx.beginPath(); ctx.arc(x-w*.36,y-h*.28,w*.04,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x+w*.36,y-h*.28,w*.04,0,Math.PI*2); ctx.fill();
+    },
+    // 3 · JS — Robot con ojos, antena y brazos
+    js(ctx,x,y,w,h,d){
+      // brazos primero
+      ctx.fillStyle=d.dark;
+      ctx.fillRect(x-w*.52,y-h*.10,w*.14,h*.10);
+      ctx.fillRect(x+w*.38,y-h*.10,w*.14,h*.10);
+      glow(ctx,d,9);
+      ctx.fillStyle=d.dark;
+      ctx.beginPath();
+      ctx.moveTo(x-w*.26,y-h*.44); ctx.lineTo(x+w*.26,y-h*.44);
+      ctx.lineTo(x+w*.32,y-h*.24); ctx.lineTo(x+w*.32,y+h*.16);
+      ctx.lineTo(x+w*.16,y+h*.44); ctx.lineTo(x-w*.16,y+h*.44);
+      ctx.lineTo(x-w*.32,y+h*.16); ctx.lineTo(x-w*.32,y-h*.24);
+      ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      noGlow(ctx);
+      // placa
+      ctx.fillStyle=d.body;
+      ctx.fillRect(x-w*.26,y-h*.40,w*.52,h*.26);
+      // ojos
+      ctx.fillStyle='#fff';
+      ctx.beginPath(); ctx.ellipse(x-w*.12,y-h*.28,w*.07,h*.08,0,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.ellipse(x+w*.12,y-h*.28,w*.07,h*.08,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#0b3d16';
+      ctx.beginPath(); ctx.arc(x-w*.10,y-h*.28,w*.028,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x+w*.14,y-h*.28,w*.028,0,Math.PI*2); ctx.fill();
+      // antena
+      ctx.strokeStyle=d.light; ctx.lineWidth=Math.max(1.2,w*.035);
+      ctx.beginPath(); ctx.moveTo(x,y-h*.44); ctx.lineTo(x,y-h*.60); ctx.stroke();
+      ctx.fillStyle='#ffca28';
+      ctx.beginPath(); ctx.arc(x,y-h*.64,w*.05,0,Math.PI*2); ctx.fill();
+      // cintura
+      ctx.fillStyle='#ffca28';
+      ctx.fillRect(x-w*.18,y+h*.22,w*.36,h*.07);
+      ctx.fillStyle=d.light;
+      ctx.fillRect(x-w*.10,y+h*.30,w*.20,h*.10);
+    },
+    // 4 · Jefe Final — Nodriza grande con tres ventanas
+    boss(ctx,x,y,w,h,d){
+      glow(ctx,d,11);
+      // laterales
+      ctx.fillStyle=d.dark;
+      ctx.beginPath();
+      ctx.moveTo(x-w*.22,y-h*.04); ctx.lineTo(x-w*.52,y+h*.14); ctx.lineTo(x-w*.46,y+h*.34);
+      ctx.lineTo(x-w*.20,y+h*.22); ctx.closePath(); ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(x+w*.22,y-h*.04); ctx.lineTo(x+w*.52,y+h*.14); ctx.lineTo(x+w*.46,y+h*.34);
+      ctx.lineTo(x+w*.20,y+h*.22); ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      // casco
+      noGlow(ctx);
+      ctx.fillStyle=d.body;
+      ctx.beginPath();
+      ctx.moveTo(x,y-h*.50);
+      ctx.lineTo(x+w*.30,y-h*.34);
+      ctx.lineTo(x+w*.34,y+h*.06);
+      ctx.lineTo(x+w*.16,y+h*.40);
+      ctx.lineTo(x-w*.16,y+h*.40);
+      ctx.lineTo(x-w*.34,y+h*.06);
+      ctx.lineTo(x-w*.30,y-h*.34);
+      ctx.closePath(); ctx.fill();
+      edge(ctx,d,w,h);
+      // ventanillas
+      ctx.fillStyle=d.light;
+      ctx.beginPath(); ctx.ellipse(x,y-h*.02,w*.19,h*.19,0,0,Math.PI*2); ctx.fill();
+      ctx.fillStyle='#ffeb3b';
+      for(let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(x-w*.14+i*w*.14,y-h*.26,w*.035,0,Math.PI*2); ctx.fill(); }
+    },
+    // 5 · Jefe CSS — Globo con las llaves { } y un cable
+    bossCss(ctx,x,y,w,h,d){
+      glow(ctx,d,11);
+      ctx.fillStyle=d.body;
+      ctx.beginPath(); ctx.ellipse(x,y-h*.06,w*.46,h*.36,0,0,Math.PI*2); ctx.fill();
+      edge(ctx,d,w,h);
+      noGlow(ctx);
+      // panza
+      ctx.fillStyle=d.dark;
+      ctx.beginPath();
+      ctx.moveTo(x-w*.22,y+h*.14); ctx.lineTo(x+w*.22,y+h*.14);
+      ctx.lineTo(x+w*.10,y+h*.42); ctx.lineTo(x-w*.10,y+h*.42);
+      ctx.closePath(); ctx.fill();
+      // ojos-cápsula
+      ctx.fillStyle=d.light;
+      ctx.beginPath(); ctx.ellipse(x,y-h*.10,w*.26,h*.24,0,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='#263238'; ctx.lineWidth=Math.max(1.4,w*.04); ctx.lineCap='round';
+      ctx.beginPath();
+      ctx.moveTo(x+w*.07,y-h*.20); ctx.lineTo(x-w*.02,y-h*.10);
+      ctx.lineTo(x-w*.02,y+h*.04); ctx.lineTo(x+w*.07,y+h*.14);
+      ctx.moveTo(x-w*.07,y-h*.20); ctx.lineTo(x+w*.02,y-h*.10);
+      ctx.lineTo(x+w*.02,y+h*.04); ctx.lineTo(x-w*.07,y+h*.14);
+      ctx.stroke();
+      // cable y punta
+      ctx.strokeStyle=d.light; ctx.lineWidth=Math.max(1.2,w*.035);
+      ctx.beginPath(); ctx.moveTo(x,y+h*.42); ctx.lineTo(x,y+h*.56); ctx.stroke();
+      ctx.fillStyle='#ffca28';
+      ctx.beginPath(); ctx.arc(x,y+h*.58,w*.045,0,Math.PI*2); ctx.fill();
+    }
+  };
+
+  function draw(ctx,id,x,y,w,h){
+    const d=typeof id==='string'?byId(id):(id||DISEÑOS[0]);
+    const fn=bodies[d.id]||bodies.html;
+    ctx.save();
+    fn(ctx,x,y,w,h,d);
+    ctx.restore();
+    return d;
+  }
+
+  // ── Texto legible dentro de la nave ────────────────────────────────────
+  // La cajita y las letras con la skin de etiqueta que tenga equipada el
+  // jugador (la comprada en la tienda). Por defecto es la de siempre: caja
+  // negra con borde, letras blancas gruesas y un contorno oscuro para que se
+  // lean de un vistazo. Ajusta el tamaño de letra y parte el texto en dos
+  // líneas si no entra.
+  // opt: { fontSize, dy, t (segundos, para las que se mueven),
+  //        skin (forzar una skin), bg, border, color, stroke }
+  function drawLabel(ctx,text,x,y,maxW,opt){
+    opt=opt||{};
+    const S=opt.skin?labelSkinById(opt.skin):labelSkinById(equippedLabelSkin);
+    const t=opt.t||0;
+    const label=String(text==null?'':text).trim()||'?';
+    const base=opt.fontSize||11;
+    let fs=base;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    const family=S.font||'"Segoe UI", system-ui, -apple-system, sans-serif';
+    const setFont=()=>{ ctx.font=(S.weight||800)+' '+fs+'px '+family; };
+    setFont();
+
+    let lines=[label];
+    const avail=Math.max(30,maxW-8);
+    if(ctx.measureText(label).width>avail){
+      const words=label.split(' ');
+      if(words.length>1){
+        // Partir en dos líneas lo más parejas posible
+        let best=null;
+        for(let i=1;i<words.length;i++){
+          const a=words.slice(0,i).join(' '), b=words.slice(i).join(' ');
+          const worst=Math.max(ctx.measureText(a).width,ctx.measureText(b).width);
+          if(!best||worst<best.worst) best={a,b,worst};
+        }
+        if(best) lines=[best.a,best.b];
+      } else {
+        lines=[label];
+      }
+    }
+    // Si con dos líneas tampoco entra, probamos letra más chica.
+    for(let attempt=0;attempt<3;attempt++){
+      const widest=Math.max(...lines.map(l=>ctx.measureText(l).width));
+      if(widest<=avail||fs<=7) break;
+      fs-=0.75; setFont();
+    }
+    // Recorte de emergencia: si una línea sigue sin entrar, se acorta.
+    lines=lines.map(l=>{
+      if(ctx.measureText(l).width<=avail) return l;
+      let s=l;
+      while(s.length>1&&ctx.measureText(s+'…').width>avail) s=s.slice(0,-1);
+      return s+'…';
+    });
+
+    const lineH=Math.round(fs*1.16);
+    const padX=Math.max(5,Math.round(fs*.55)), padY=Math.max(3,Math.round(fs*.36));
+    let maxLineW=0; for(const l of lines){ const w=ctx.measureText(l).width; if(w>maxLineW) maxLineW=w; }
+    const boxW=Math.min(maxLineW+padX*2, maxW);
+    const boxH=lines.length*lineH+padY*2;
+    const boxY=y+(opt.dy||0);
+
+    // ── Efecto de movimiento de la skin ──────────────────────────────────
+    // Se aplica una transformación a la caja antes de dibujarla. Cada efecto
+    // devuelve el desplazamiento (dx,dy) y la rotación (rot) en ese instante,
+    // para que sea el mismo cuadro el que se mueve y no un temblor falso.
+    let ox=0, oy=0, rot=0, sc=1, alpha=1;
+    const fx=S.fx;
+    if(fx){
+      switch(fx){
+        case 'orbita':   ox=Math.cos(t*1.8)*fs*0.55; oy=Math.sin(t*2.4)*fs*0.5; rot=Math.sin(t*1.8)*0.14; break;
+        case 'temblor':  ox=(Math.random()-.5)*fs*0.5; oy=(Math.random()-.5)*fs*0.4; rot=(Math.random()-.5)*0.09; break;
+        case 'inclinar': rot=Math.sin(t*1.6)*0.42; break;
+        case 'rebote':   oy=-Math.abs(Math.sin(t*3.2))*fs*0.85; sc=1+Math.abs(Math.sin(t*3.2))*0.1; break;
+        case 'latido':   sc=1+Math.abs(Math.sin(t*3.4))*0.16; rot=Math.sin(t*1.7)*0.05; break;
+        case 'flotar':   oy=Math.sin(t*1.5)*fs*0.7; rot=Math.sin(t*1.1)*0.07; break;
+        case 'girar':    rot=Math.sin(t*1.3)*0.55; sc=1+Math.sin(t*2.6)*0.08; break;
+        case 'electrica':ox=(Math.random()<.12?(Math.random()-.5)*fs*2.2:0); rot=(Math.random()<.08?(Math.random()-.5)*0.2:0); break;
+        case 'espejo':   sc=Math.abs(Math.cos(t*1.4))||0.05; rot=0; break;
+        case 'pulso':    sc=1+Math.abs(Math.sin(t*2.2))*0.22; break;
+        case 'deslizar': ox=Math.sin(t*1.9)*maxW*0.16; rot=Math.sin(t*1.9)*0.1; break;
+        case 'glitch':   ox=((t*13)%1<.5?1:-1)*fs*0.4*(Math.random()<.2?1:0); sc=1; break;
+        case 'matrix':   for(let i=0;i<3;i++) oy+=Math.sin(t*6+i*2)*0.5; break;
+        case 'supernova':sc=1+Math.abs(Math.sin(t*1.8))*0.35; rot=Math.sin(t*1.8)*0.12; break;
+        case 'nexus':    rot=Math.sin(t*0.9)*0.3; sc=1+Math.sin(t*1.7)*0.12; ox=Math.cos(t*0.9)*fs*0.35; oy=Math.sin(t*1.2)*fs*0.35; break;
+      }
+    }
+
+    // Caja
+    ctx.save();
+    ctx.translate(x+ox, boxY+oy);
+    if(rot) ctx.rotate(rot);
+    if(sc!==1) ctx.scale(sc,sc);
+    if(alpha!==1) ctx.globalAlpha=alpha;
+    const bx=-boxW/2, by=-boxH/2, r=Math.max(3,Math.round(fs*.35));
+    ctx.beginPath();
+    ctx.moveTo(bx+r,by); ctx.lineTo(bx+boxW-r,by);
+    ctx.quadraticCurveTo(bx+boxW,by,bx+boxW,by+r);
+    ctx.lineTo(bx+boxW,by+boxH-r);
+    ctx.quadraticCurveTo(bx+boxW,by+boxH,bx+boxW-r,by+boxH);
+    ctx.lineTo(bx+r,by+boxH);
+    ctx.quadraticCurveTo(bx,by+boxH,bx,by+boxH-r);
+    ctx.lineTo(bx,by+r);
+    ctx.quadraticCurveTo(bx,by,bx+r,by);
+    ctx.closePath();
+    ctx.fillStyle=opt.bg||S.bg||'rgba(0,0,0,.86)';
+    ctx.fill();
+    // El borde puede latir (skin "neon"/"infernal") y dejar un brillo.
+    const lat=S.anim?(0.55+Math.abs(Math.sin(t*2.4))*0.45):1;
+    ctx.strokeStyle=opt.border||S.border||'rgba(255,255,255,.35)';
+    ctx.lineWidth=S.anim?1.8:1;
+    if(S.glow){ ctx.shadowColor=S.glow; ctx.shadowBlur=6*lat; }
+    ctx.stroke();
+    ctx.shadowBlur=0;
+
+    // Letras. Con "hue" van cambiando de color con el tiempo (arcoíris).
+    let ink=opt.color||S.color||'#ffffff';
+    if(S.hue&&!opt.color) ink='hsl('+Math.round((t*90+200)%360)+',100%,64%)';
+    ctx.fillStyle=ink;
+    ctx.strokeStyle=opt.stroke||S.stroke||'rgba(0,0,0,.9)';
+    ctx.lineWidth=Math.max(2,fs*.22);
+    ctx.lineJoin='round';
+    const y0=-((lines.length-1)*lineH)/2;
+    lines.forEach((l,i)=>{
+      const ly=y0+i*lineH;
+      ctx.strokeText(l,0,ly);
+      ctx.fillText(l,0,ly);
+    });
+    // Glitch: copia desplazada en rojo y cian por encima del texto real.
+    if(fx==='glitch'){
+      ctx.globalCompositeOperation='lighter';
+      ctx.fillStyle='rgba(255,0,51,.55)'; ctx.strokeStyle='rgba(255,0,51,.5)';
+      const go=((t*11)%1)*fs*0.7-fs*0.35;
+      lines.forEach((l,i)=>{ const ly=y0+i*lineH; ctx.strokeText(l,go,ly); ctx.fillText(l,go,ly); });
+      ctx.fillStyle='rgba(0,229,255,.55)'; ctx.strokeStyle='rgba(0,229,255,.5)';
+      lines.forEach((l,i)=>{ const ly=y0+i*lineH; ctx.strokeText(l,-go,ly); ctx.fillText(l,-go,ly); });
+      ctx.globalCompositeOperation='source-over';
+    }
+    // Matrix: caracteres que caen debajo de la caja.
+    if(fx==='matrix'){
+      ctx.font='700 '+(fs*0.72)+'px "Courier New", monospace';
+      ctx.fillStyle='rgba(0,255,102,.75)';
+      const chars='01ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄ01アイウエオカキクケコサシスセソ';
+      const nw=maxW;
+      for(let i=0;i<6;i++){
+        const px=-nw/2+((t*60+i*17)%nw);
+        const py=boxH/2+((t*70+i*23)%(fs*3));
+        ctx.fillText(chars[Math.floor(Math.random()*chars.length)],px,py);
+      }
+    }
+    ctx.restore();
+    return {w:boxW,h:boxH};
+  }
+
+  // Cambiar la skin de etiqueta con la que se dibuja todo lo de ahora en más.
+  function setLabelSkin(id){ equippedLabelSkin=(LABEL_SKINS.some(s=>s.id===id)?id:'default'); return equippedLabelSkin; }
+  function currentLabelSkin(){ return equippedLabelSkin; }
+
+  return { DISEÑOS, byId, random, draw, drawLabel, LABEL_SKINS, labelSkinById, setLabelSkin, currentLabelSkin };
+})();

@@ -1,0 +1,1044 @@
+const MultiSkins=(typeof SKIN_DATA!=='undefined')?SKIN_DATA:[];
+
+// ══ ARENA MULTIJUGADOR ═══════════════════════════════════════════════════
+// Una sola pantalla. Cada jugador ocupa una franja vertical con su nave al
+// fondo, separadas entre sí. Las naves enemigas caen dentro de la franja de
+// su dueño y el fondo se desplaza como si el espacio avanzara. Las posiciones
+// se calculan acá con requestAnimationFrame a partir del spawnAt del servidor,
+// así el movimiento es fluido aunque el estado llegue cada 1,5 s.
+  const MultiArena=(()=>{
+  let cv=null,ctx=null,raf=null,dpr=1,W=0,H=0;
+  let stars=[],beams=[],booms=[],shock=0;
+  let players=[],enemies=[],seenEvents={},me='',clockOff=0,travelMs=5000,lastT=0,visible=false,wavePhase=1,matchId='';
+  // Puesto de cada nave dentro de la franja de su dueño: fila, columna y
+  // tamaño. Se calcula UNA sola vez y no se vuelve a tocar hasta que la nave
+  // desaparece, así la formación no da saltos a mitad de la caída. Al
+  // destruirse se copia a deadSlot para poder ubicar la explosión exactamente
+  // donde estaba la nave.
+  const slotMap=new Map();
+  const deadSlot=new Map();
+
+  function serverNow(){ return Date.now()+clockOff; }
+  function syncClock(serverNowMs){ if(serverNowMs) clockOff=serverNowMs-Date.now(); }
+  // Cuánto tarda una nave en tocar la línea de peligro. Cada nave trae SU
+  // velocidad de caída: usar la de la oleada en curso las borraba de la
+  // pantalla antes de tiempo y hacía perder vidas sin que se vieran llegar.
+  // Si el servidor no manda la velocidad, se usa la de la oleada.
+  function travelOf(e){
+    const fb=travelMs?1000/travelMs:0.26;
+    return 1000/Math.max(0.008,(e&&e.fall)||fb);
+  }
+  function laneRect(lane,count){
+    const n=Math.max(1,count||1); const w=W/n;
+    return { x:lane*w, w:w, cx:lane*w+w/2, pad:Math.max(6,w*0.06) };
+  }
+  function resize(){
+    if(!cv) return;
+    const box=cv.parentElement; if(!box) return;
+    dpr=Math.min(2,window.devicePixelRatio||1);
+    W=Math.max(320,box.clientWidth); H=Math.max(280,box.clientHeight);
+    cv.width=Math.round(W*dpr); cv.height=Math.round(H*dpr);
+    cv.style.width=W+'px'; cv.style.height=H+'px';
+    if(ctx) ctx.setTransform(dpr,0,0,dpr,0,0);
+    buildStars();
+  }
+  function buildStars(){
+    const n=Math.round((W*H)/5200)+40; stars=[];
+    for(let i=0;i<n;i++) stars.push({ x:Math.random()*W, y:Math.random()*H, z:0.25+Math.random()*1.15, s:0.6+Math.random()*1.5 });
+  }
+  // Orden de columnas "del centro hacia afuera" (para 5 columnas sale
+  // 2,1,3,0,4). Con esto la formación se arma simétrica, como la del nivel 1,
+  // en vez de arrancar pegada a un borde.
+  function centerOut(n){
+    if(n<=0) return [];
+    const mid=(n-1)/2, idx=[];
+    for(let i=0;i<n;i++) idx.push(i);
+    return idx.sort((a,b)=>(Math.abs(a-mid)-Math.abs(b-mid))||(a-b));
+  }
+  // Las naves se reparten en varias columnas dentro de la franja de su dueño,
+  // igual que la formación escalonada del nivel 1, en vez de apilarse todas en
+  // el centro. Las columnas se cuentan para que la nave entre entera y quede
+  // margen entre una y otra, así nunca se pisan (y da igual que la franja sea
+  // de 2 jugadores o de 4).
+  function laneLayout(lane,count){
+    const L=laneRect(lane,count);
+    const span=Math.max(40,L.w-L.pad*2);
+    const cols=Math.max(1,Math.min(5,Math.round(span/100)));
+    const step=span/cols;
+    const w=Math.max(38,Math.min(112,step*0.78));
+    const h=Math.max(28,Math.min(84,w*0.78));
+    return { L, cols, step, w, h };
+  }
+  // Altura de la línea de peligro y de la fila más alta de la formación.
+  function geomBounds(h){
+    const hh=Math.max(30,h||60);
+    const danger=H*0.86;
+    const top=Math.max(hh*0.7,H*0.10);
+    return { danger, top, room:Math.max(20,danger-top) };
+  }
+  // Separación entre filas de la formación: la justa para que las naves no se
+  // pisen entre sí.
+  function rowGap(h){ const hh=Math.max(30,h||60); return Math.max(8,hh*1.06); }
+  // Distancia que recorre una nave desde que aparece hasta la línea de
+  // peligro. Es la MISMA para todas: así la formación y las naves que van
+  // apareciendo después bajan a la misma velocidad y ninguna termina
+  // atravesando a la otra. La fila de adelante (row 1) es la que queda sobre
+  // la línea; las de atrás (row 0, -1...) entran desde el borde de arriba.
+  function travelPx(h){
+    const b=geomBounds(h);
+    return Math.max(20,b.danger-b.top-rowGap(h));
+  }
+  // Altura de una nave según el puesto que tiene en la formación, SIN el
+  // corrimiento anti-choque (ver relaxLanes).
+  function baseY(slot,e){
+    const hh=Math.max(30,slot.h||60);
+    const b=geomBounds(hh);
+    const row=(slot.row==null?1:slot.row);
+    const frac=Math.min(1.12,((serverNow()-e.spawnAt)/1000)*(e.fall||0.033));
+    return b.top+row*rowGap(hh)+travelPx(hh)*frac;
+  }
+  function slotY(slot,e){ return baseY(slot,e)+(slot.dy||0); }
+  // Anti-choque: si una nave que entra por arriba no tiene hueco (carril
+  // angosto con 4 jugadores) se la sube lo justo para que entre mirando hacia
+  // abajo, en vez de taparse con la de al lado. Con la caída uniforme casi no
+  // hace falta, pero evita que dos naves queden pegadas.
+  function relaxLanes(count){
+    const byLane={};
+    for(const e of enemies){ const l=e.lane||0; (byLane[l]||(byLane[l]=[])).push(e); }
+    for(const lane in byLane){
+      const lay=laneLayout(+lane,count);
+      const info=[];
+      for(const e of byLane[lane]){
+        const s=slotMap.get(e.id); if(!s) continue;
+        info.push({ e, s, x:colX(lay,s), y:baseY(s,e), flex:!!s.solo, id:e.id });
+      }
+      info.sort((a,b)=>(a.y-b.y)||String(a.id).localeCompare(String(b.id)));
+      const sep=lay.h*1.02;
+      for(let i=0;i<info.length;i++){
+        for(let j=0;j<info.length;j++){
+          if(i===j) continue;
+          const A=info[i],B=info[j];
+          if(B.y-A.y<=0) continue;            // A va por encima de B
+          if(B.y-A.y>=sep) continue;          // ya hay hueco
+          if(Math.abs(A.x-B.x)>=lay.w*0.92) continue;  // columnas distintas
+          if(A.flex) A.y-=(sep-(B.y-A.y));
+        }
+      }
+      // Red de seguridad: una nave nunca sube más de un tercio de la pantalla
+      // por encima de donde le tocaría (si subiera tanto, no se vería).
+      const tope=H*0.35;
+      for(const o of info) o.s.dy=Math.max(-tope,o.y-baseY(o.s,o.e));
+    }
+  }
+  // Columna x de un puesto. Todas las naves de la franja usan la misma grilla
+  // (las del grupo y las sueltas), si no una formation de 3 columnas y una
+  // suelta de 4 se pisan: sus x quedaban a medio paso la una de la otra.
+  function colX(lay,slot){ return lay.L.cx+((slot.col||0)-(slot.cols-1)/2)*lay.step; }
+  function enemyGeom(e,count){
+    const lay=laneLayout(e.lane||0,count);
+    const slot=slotMap.get(e.id)||deadSlot.get(e.id)
+      ||{row:0,rows:1,cols:lay.cols,col:Math.floor(lay.cols/2),w:lay.w,h:lay.h};
+    const t=serverNow()-e.spawnAt;
+    const y=slotY(slot,e);
+    // Vaivén suave en píxeles para que la formación no quede rígida.
+    const sway=Math.sin(t/1500+(slot.col||0)*6.283)*lay.step*0.05;
+    // Ojo: hay que sumar el centro de la franja del dueño (L.cx), si no todas
+    // las naves de todos los jugadores se dibujan una encima de otra.
+    const x=colX(lay,slot)+sway;
+    return { L:lay.L, x, y, w:slot.w, h:slot.h, col:slot.col, row:slot.row||0 };
+  }
+  // Reparte a las naves de cada franja en una grilla de varias filas, como la
+  // formación del nivel 1.
+  //  - Las que salieron JUNTAS (mismo spawnAt) forman una sola formación: se
+  //    reparten en una grilla de `perRow` columnas por `rows` filas. Con eso
+  //    al empezar la partida ya no se ven en una fila, sino en bloque.
+  //  - Las que van apareciendo de a una se turnan todas las columnas de la
+  //    franja, para que no caigan siempre por el centro.
+  function assignSlots(list,count){
+    const byLane={};
+    for(const e of list){ const lane=e.lane||0; (byLane[lane]||(byLane[lane]=[])).push(e); }
+    const live=new Set();
+    const n=Math.max(1,count||1);
+    for(const lane in byLane){
+      const lay=laneLayout(+lane,n);
+      // Más antigua primero: el índice en la lista es el orden en que fueron
+      // apareciendo, que es el que define su lugar en la grilla.
+      const arr=byLane[lane].slice().sort((a,b)=>(a.spawnAt-b.spawnAt)||String(a.id).localeCompare(String(b.id)));
+      // Se agrupan las que salieron en el mismo instante.
+      const groups=[];
+      for(const e of arr){
+        const g=groups[groups.length-1];
+        if(g&&g.at===e.spawnAt) g.list.push(e);
+        else groups.push({at:e.spawnAt,list:[e]});
+      }
+      const puestos=arr.map(e=>({e,s:slotMap.get(e.id)})).filter(o=>o.s);
+      let sueltas=0;
+      for(const g of groups){
+        const len=g.list.length;
+        if(len<2){
+          const e=g.list[0]; live.add(e.id);
+          if(!slotMap.has(e.id)){
+            // Se busca la primera columna donde la nave ENTRE sin tapar a
+            // ninguna de las que ya están (si se pisan, se ve un grupo de
+            // naves arriba y no se puede apuntar a ninguna).
+            const cand={row:1,rows:2,solo:1,cols:lay.cols,col:0,w:lay.w,h:lay.h};
+            const sep=lay.h*1.02;
+            const y0=baseY(cand,e);
+            let col=null,dy=0;
+            for(const c of centerOut(lay.cols)){
+              cand.col=c;
+              const x=colX(lay,cand);
+              let libre=true,subir=0;
+              for(const o of puestos){
+                if(Math.abs(colX(lay,o.s)-x)>=lay.w*0.92) continue;
+                const oy=slotY(o.s,o.e);
+                if(Math.abs(oy-y0)>=sep) continue;
+                libre=false;
+                // Si termina pisando, se sube lo justo para que entre por
+                // arriba, como cuando las naves hacen fila para bajar.
+                subir=Math.min(subir, oy-sep-y0);
+              }
+              if(libre){ col=c; break; }
+              if(subir<dy){ col=c; dy=subir; }
+            }
+            // Carril lleno de verdad: se sube lo justo y se sigue.
+            if(col==null) col=centerOut(lay.cols)[sueltas%lay.cols];
+            const s={row:1,rows:2,solo:1,cols:lay.cols,col,dy:Math.max(-rowGap(lay.h)*1.2,dy),w:lay.w,h:lay.h};
+            slotMap.set(e.id,s); puestos.push({e,s});
+          }
+          sueltas++;
+          continue;
+        }
+        // La formación usa un bloque CONTIGUO de columnas del carril, con el
+        // mismo paso que las sueltas, y de centro hacia afuera. Si puede deja
+        // una columna libre para que las naves que van apareciendo entren por
+        // ahí en vez de montarse encima.
+        const maxCols=Math.min(lay.cols,Math.max(2,lay.cols-1));
+        const perRow=Math.min(maxCols,Math.ceil(len/2));
+        const rows=Math.ceil(len/perRow);
+        const start=Math.floor((lay.cols-perRow)/2);
+        const perm=centerOut(perRow);
+        g.list.forEach((e,i)=>{
+          live.add(e.id);
+          if(slotMap.has(e.id)) return;
+          // Fila 1 = la de adelante (termina sobre la línea de peligro), 0 y
+          // -1 las de atrás, que entran desde el borde de arriba.
+          const s={row:1-Math.floor(i/perRow),rows,cols:lay.cols,col:start+perm[i%perRow],w:lay.w,h:lay.h};
+          slotMap.set(e.id,s); puestos.push({e,s});
+        });
+      }
+    }
+    for(const id of slotMap.keys()) if(!live.has(id)){ deadSlot.set(id,slotMap.get(id)); slotMap.delete(id); }
+    // La memoria de las naves destruidas se recorta sola.
+    if(deadSlot.size>40){ const ks=[...deadSlot.keys()]; for(let i=0;i<ks.length-40;i++) deadSlot.delete(ks[i]); }
+  }
+  function playerGeom(p,count){
+    const L=laneRect(p.lane||0,count);
+    return { L, x:L.cx, y:H*0.9 };
+  }
+  // Fondo de espacio: las estrellas van bajando y además hay nebulosas que
+  // van cambiando de color y de posición a medida que avanza la partida, para
+  // que se vea que estamos avanzando por el espacio.
+  const NEBULAS=[
+    { c:['rgba(0,120,255,.16)','rgba(124,77,255,.10)'], r:.75, sx:.00013, sy:.00009, px:.18, py:.22 },
+    { c:['rgba(255,0,120,.13)','rgba(255,105,180,.08)'], r:.60, sx:-.00010, sy:.00014, px:.72, py:.18 },
+    { c:['rgba(0,255,190,.10)','rgba(0,100,255,.10)'], r:.85, sx:.00008, sy:-.00012, px:.42, py:.70 },
+    { c:['rgba(255,140,0,.10)','rgba(200,0,255,.09)'],  r:.55, sx:-.00014, sy:-.00007, px:.85, py:.62 },
+    { c:['rgba(80,0,255,.13)','rgba(0,200,255,.09)'],  r:.70, sx:.00011, sy:.00011, px:.08, py:.66 }
+  ];
+  function drawStarfield(dt,t,phase){
+    ctx.fillStyle='#04060f'; ctx.fillRect(0,0,W,H);
+    const g=ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0,'rgba(8,14,40,.55)'); g.addColorStop(.55,'rgba(4,6,16,0)'); g.addColorStop(1,'rgba(2,4,12,.6)');
+    ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+    // Nebulosas: el color rota despacio con la fase de la partida.
+    ctx.save();
+    ctx.globalCompositeOperation='lighter';
+    const rot=Math.floor(phase||0)%NEBULAS.length;
+    for(let k=0;k<2;k++){
+      const i=(rot+k)%NEBULAS.length, n=NEBULAS[i];
+      const x=W*(n.px+Math.sin(t*n.sx+i)*.07);
+      const y=H*(n.py+Math.cos(t*n.sy+i*1.7)*.06);
+      const r=Math.max(W,H)*n.r;
+      const gr=ctx.createRadialGradient(x,y,0,x,y,r);
+      gr.addColorStop(0,n.c[0]); gr.addColorStop(1,n.c[1]);
+      ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+    const spd=26+(shock>0?90:0)+Math.min(60,(phase||0)*4);
+    for(const s of stars){
+      s.y+=s.z*spd*dt; if(s.y>H+2){ s.y=-2; s.x=Math.random()*W; }
+      ctx.globalAlpha=Math.min(.9,.18+s.z*.45);
+      ctx.fillStyle= s.z>1.05?'#a5f3fc':'#ffffff';
+      ctx.fillRect(s.x,s.y,s.s,s.z>1.05?s.s*2.4:s.s);
+    }
+    ctx.globalAlpha=1;
+  }
+  function drawEnemy(e,count){
+    const g=enemyGeom(e,count); if(g.y>H+40||g.y<-40) return;
+    const x=g.x, w=g.w, h=g.h, bob=Math.sin((serverNow()/260)+(e.lane||0))*h*.06;
+    const y=g.y+bob;
+    // Diseño de nave al azar: cada una se ve distinta a las de al lado.
+    EnemyShips.draw(ctx,e.design||'html',x,y,w,h);
+    // Carta con la barra de vida del dueño: se ve a quién hay que ayudar.
+    const d=EnemyShips.byId(e.design||'html');
+    ctx.save();
+    ctx.textAlign='center';
+    ctx.fillStyle=d.glow; ctx.font='800 9px system-ui,sans-serif';
+    ctx.fillText(d.cat,x,y-h*.36);
+    // Texto legible dentro de la nave, igual que en el modo de un jugador y con
+    // la misma skin de etiqueta de la tienda.
+    EnemyShips.drawLabel(ctx,e.q,x,y+h*.16,w-10,{fontSize:10,t:serverNow()/1000});
+    ctx.restore();
+  }
+  function drawPlayer(p,count,t){
+    const g=playerGeom(p,count);
+    const sk=MultiSkins.find(s=>s.id===p.skin)||MultiSkins[0];
+    const spin=sk&&sk.spin?sk.spin:'no';
+    let tilt=0;
+    if(spin==='medio') tilt=Math.sin(t/620+p.lane)*0.06;
+    else if(spin==='rapido') tilt=Math.sin(t/340+p.lane)*0.11;
+    const bob=Math.sin(t/320+p.lane)*5;
+    const s=Math.min(30,g.L.w*.22);
+    ctx.save();
+    ctx.translate(g.x,g.y+bob);
+    ctx.rotate(tilt);
+    ctx.scale(s/30,s/30);
+    // Silueta de la skin (misma que en el juego de un jugador)
+    ctx.shadowColor=sk?sk.glow:'#00e5ff'; ctx.shadowBlur=16;
+    ctx.fillStyle=sk?sk.body:'#00e5ff'; ctx.strokeStyle='rgba(255,255,255,.9)'; ctx.lineWidth=1.4;
+    if(typeof Hulls!=='undefined'){ Hulls.drawStroked(ctx,(sk&&sk.hull)||'arrow',sk?sk.body:'#00e5ff','rgba(255,255,255,.9)',1.4); }
+    else { ctx.beginPath(); ctx.moveTo(0,-33); ctx.lineTo(-30,24); ctx.lineTo(-10,15); ctx.lineTo(0,24); ctx.lineTo(10,15); ctx.lineTo(30,24); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    ctx.shadowBlur=0;
+    ctx.globalAlpha=.3; ctx.fillStyle=sk?sk.accent:'#80d8ff';
+    ctx.beginPath(); ctx.moveTo(0,-24); ctx.lineTo(-5,-2); ctx.lineTo(0,6); ctx.lineTo(5,-2); ctx.closePath(); ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.fillStyle=sk?sk.accent:'#80d8ff'; ctx.beginPath(); ctx.arc(0,-6,4.4,0,Math.PI*2); ctx.fill();
+    // Llama del motor, con la forma de la skin
+    const fl=(sk&&sk.flame)||'normal';
+    const fw=fl==='largo'?8:(fl==='triple'?7:6);
+    const flen=(10+Math.abs(Math.sin(t/120+p.lane))*5)*(fl==='largo'?1.9:(fl==='triple'?1.25:1));
+    ctx.fillStyle=(sk&&sk.fire)||'#ff6d00';
+    ctx.shadowColor=ctx.fillStyle; ctx.shadowBlur=10;
+    ctx.beginPath(); ctx.moveTo(-fw,20); ctx.lineTo(0,20+flen); ctx.lineTo(fw,20); ctx.closePath(); ctx.fill();
+    if(fl==='doble'||fl==='triple'){
+      const n=fl==='triple'?3:2;
+      for(let i=0;i<n;i++){
+        const ox=(i-(n-1)/2)*7, l2=flen*(0.55+Math.abs(Math.sin(t/150+i+p.lane))*0.4);
+        ctx.beginPath(); ctx.moveTo(ox-4,20); ctx.lineTo(ox,20+l2); ctx.lineTo(ox+4,20); ctx.closePath(); ctx.fill();
+      }
+    }
+    ctx.restore();
+    // Nombres y vidas van sueltos, sin rotar, para que se lean siempre.
+    ctx.save();
+    ctx.textAlign='center';
+    ctx.fillStyle= p.userId===me?'#00e5ff':(p.nameColor||'#ffffff');
+    ctx.font=(p.userId===me?'800 ':'700 ')+'12px system-ui,sans-serif';
+    ctx.fillText(p.username+(p.userId===me?' (TÚ)':''),g.x,g.y+bob+s*1.5);
+    const lives=Math.max(0,p.lives==null?2:p.lives);
+    ctx.fillStyle= lives>0?'#ff4d6d':'#555';
+    ctx.font='15px system-ui,sans-serif';
+    ctx.fillText('♥'.repeat(lives)+'♡'.repeat(Math.max(0,2-lives)),g.x,g.y+bob+s*1.5+16);
+    ctx.fillStyle='#9fb3c8'; ctx.font='600 10px system-ui,sans-serif';
+    ctx.fillText('💥'+p.kills+'  🔥'+p.streak,g.x,g.y+bob-s*1.5-4);
+    ctx.restore();
+  }
+  function drawLanes(count,t){
+    for(let i=0;i<count;i++){
+      const L=laneRect(i,count);
+      ctx.fillStyle=i%2?'rgba(255,255,255,.016)':'rgba(0,229,255,.022)';
+      ctx.fillRect(L.x,0,L.w,H);
+      ctx.strokeStyle='rgba(0,229,255,.10)'; ctx.lineWidth=1;
+      ctx.beginPath(); ctx.moveTo(L.x+.5,0); ctx.lineTo(L.x+.5,H); ctx.stroke();
+    }
+    // línea de peligro
+    const y=H*0.86;
+    ctx.strokeStyle='rgba(255,23,68,'+(0.25+Math.sin(t/220)*0.16)+')'; ctx.lineWidth=2;
+    ctx.setLineDash([10,8]);
+    ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  function drawFx(dt){
+    for(let i=beams.length-1;i>=0;i--){
+      const b=beams[i]; b.t+=dt;
+      if(b.t>=b.dur){ beams.splice(i,1); continue; }
+      const k=b.t/b.dur;
+      // El haz crece desde la nave hacia el objetivo.
+      const reach=Math.min(1,k*2.2);
+      const x2=b.x1+(b.x2-b.x1)*reach, y2=b.y1+(b.y2-b.y1)*reach;
+      if(b.miss){
+        ctx.save(); ctx.globalAlpha=1-k;
+        ctx.strokeStyle='rgba(255,82,82,.85)'; ctx.lineWidth=2.6;
+        ctx.shadowColor='#ff5252'; ctx.shadowBlur=12;
+        ctx.beginPath(); ctx.moveTo(b.x1,b.y1); ctx.lineTo(x2,y2); ctx.stroke();
+        ctx.restore();
+      }else{
+        // El láser de cada jugador: mismo efecto que en la tienda.
+        LaserFx.draw(ctx,b.fx||'default',b.x1,b.y1,x2,y2,b.t,{alpha:1-k,w:2.6,blur:12});
+      }
+    }
+    for(let i=booms.length-1;i>=0;i--){
+      const b=booms[i]; b.t+=dt;
+      if(b.t>=b.dur){ booms.splice(i,1); continue; }
+      const k=b.t/b.dur;
+      // Si el jugador compró un impacto en la tienda, se dibuja ese (es el
+      // mismo módulo que en el modo de un jugador). Con el "normal" queda la
+      // explosión de siempre: una bolita de luz con el 💥.
+      if(b.impact&&b.impact!=='default'){
+        ImpactFx.draw(ctx,b.impact,b.x,b.y,k,{t:b.t,r:b.r,alpha:1-k,tint:b.col});
+      }else{
+        ctx.save(); ctx.globalAlpha=1-k;
+        const r=b.r*(0.4+k*1.1);
+        const g=ctx.createRadialGradient(b.x,b.y,0,b.x,b.y,r);
+        g.addColorStop(0,'rgba(255,255,255,.95)'); g.addColorStop(.45,b.col+'cc'); g.addColorStop(1,'rgba(0,0,0,0)');
+        ctx.fillStyle=g; ctx.beginPath(); ctx.arc(b.x,b.y,r,0,Math.PI*2); ctx.fill();
+        ctx.restore();
+      }
+      ctx.save(); ctx.globalAlpha=Math.max(0,1-k);
+      ctx.fillStyle='#fff'; ctx.font='800 '+Math.round(20+k*14)+'px system-ui,sans-serif'; ctx.textAlign='center';
+      ctx.fillText('💥',b.x,b.y+6);
+      ctx.restore();
+    }
+  }
+  function frame(t){
+    raf=requestAnimationFrame(frame);
+    if(!ctx) return;
+    const dt=Math.min(.05,lastT?(t-lastT)/1000:.016); lastT=t;
+    if(shock>0) shock=Math.max(0,shock-dt*2.2);
+    if(!visible){ return; }
+    const count=Math.max(1,players.length);
+    ctx.save();
+    try{
+      if(shock>0) ctx.translate((Math.random()-.5)*shock*10,(Math.random()-.5)*shock*10);
+      relaxLanes(count);
+      drawStarfield(dt,t,wavePhase);
+      drawLanes(count,t);
+      for(const e of enemies) drawEnemy(e,count);
+      for(const p of players) drawPlayer(p,count,t);
+      drawFx(dt);
+      if(shock>0){ ctx.fillStyle='rgba(255,23,68,'+(shock*.14)+')'; ctx.fillRect(0,0,W,H); }
+    }catch(err){
+      // Un error al dibujar no puede dejar el canvas a medias ni frenar la
+      // partida: se avisa una sola vez y el loop sigue.
+      if(!frame._warned){ frame._warned=true; console.error('[multi] error dibujando la arena:',err); }
+    }finally{
+      ctx.restore();
+    }
+  }
+  function ensureLoop(){
+    if(raf) return;
+    lastT=0; raf=requestAnimationFrame(frame);
+  }
+  function stopLoop(){ if(raf){ cancelAnimationFrame(raf); raf=null; } }
+
+  return {
+    attach(){
+      cv=document.getElementById('multiCanvas'); if(!cv) return false;
+      ctx=cv.getContext('2d');
+      if(!ctx) return false;
+      if(!this._bound){
+        this._bound=true;
+        window.addEventListener('resize',()=>{ resize(); });
+      }
+      resize(); ensureLoop();
+      return true;
+    },
+    resize,
+    // Entra a la arena. El id de la partida se usa para saber cuándo empieza
+    // una de verdad: si no, cada consulta al servidor (cada 1,5 s) reiniciaba
+    // el cielo de estrellas y borraba la formación, y las naves salían
+    // repartidas otra vez en cada consulta.
+    enter(newMatchId){
+      this.attach(); visible=true; ensureLoop();
+      if(newMatchId&&newMatchId===matchId) return;
+      matchId=newMatchId||'';
+      buildStars(); slotMap.clear(); deadSlot.clear();
+    },
+    leave(){ visible=false; matchId=''; stopLoop(); },
+    // Sincroniza el estado del servidor con el render local.
+    setState(match,meId,serverNowMs){
+      syncClock(serverNowMs);
+      if(!match) return;
+      me=meId||'';
+      players=match.players||[];
+      travelMs=match.travelMs||travelMs;
+      wavePhase=match.wave||1;
+      // El láser y el impacto propios: los que tiene equipados en la tienda.
+      const yo=players.find(p=>p.userId===me);
+      this.equippedLaser=(yo&&yo.laser)||this.equippedLaser||'default';
+      this.equippedImpact=(yo&&yo.impact)||this.equippedImpact||'default';
+      // Cada nave se borra cuando la pasa su propio tiempo de caída (el del
+      // servidor), con un margen para que se vea tocar la línea.
+      const now=serverNow();
+      enemies=(match.enemies||[]).filter(e=>(now-e.spawnAt)<travelOf(e)*1.1);
+      assignSlots(enemies,players.length);
+      // eventos de ruptura de línea
+      (match.events||[]).forEach(ev=>{
+        if(seenEvents[ev.id]) return;
+        seenEvents[ev.id]=1;
+        if(ev.type==='breach'){ shock=1; this.flashBreach(); }
+      });
+      const evs=match.events||[];
+      Object.keys(seenEvents).forEach(k=>{ if(!evs.some(e=>e.id===k)) delete seenEvents[k]; });
+    },
+    // Disparo: traza el láser desde la nave del jugador hasta el objetivo.
+    // killed puede ser la nave (con id) o sólo su dueño, porque cuando llega
+    // la respuesta del servidor la nave ya no está en la lista local.
+    fire(killed,miss){
+      if(!ctx) return;
+      const count=Math.max(1,players.length);
+      const meP=players.find(p=>p.userId===me)||players[0];
+      if(!meP) return;
+      const pg=playerGeom(meP,count);
+      const target=this.findTarget(killed,count);
+      let x2=target?target.x:W/2, y2=target?target.y:H*0.3;
+      if(target){
+        booms.push({x:x2,y:y2,r:Math.min(70,Math.max(38,pg.L.w*.36)),t:0,dur:.55,col:'#00e5ff',impact:this.equippedImpact||'default'});
+      }
+      beams.push({x1:pg.x,y1:pg.y-Math.min(30,pg.L.w*.22)*1.1,x2,y2,t:0,dur:.35,miss:!!miss,fx:this.equippedLaser||'default',col:'#00e5ff'});
+      if(miss) shock=Math.max(shock,.5);
+    },
+    // Dónde estaba la nave destruida: la buscamos por id y, si ya no está,
+    // reconstruimos la posición con el lugar que tenía asignado (y con los
+    // datos que manda el servidor) para que la explosión no salga en el centro.
+    findTarget(killed,count){
+      if(!killed) return null;
+      const n=count||Math.max(1,players.length);
+      const e=(killed.id&&enemies.find(x=>x.id===killed.id))||null;
+      if(e){ const g=enemyGeom(e,n); return {x:g.x,y:Math.max(6,g.y)}; }
+      if(killed.spawnAt!=null){
+        const g=enemyGeom({id:killed.id,lane:killed.lane,spawnAt:killed.spawnAt,fall:killed.fall},n);
+        return {x:g.x,y:Math.max(6,g.y)};
+      }
+      // Último recurso: el centro de la franja de su dueño.
+      const idx=players.findIndex(p=>p.userId===killed.ownerId);
+      if(idx<0) return null;
+      const L=laneRect(idx,n);
+      return { x:L.cx, y:H*0.45 };
+    },
+    // Disparo de otro jugador: mismo efecto pero con su color de nave.
+    remoteFire(s){
+      if(!ctx||!s) return;
+      const count=Math.max(1,players.length);
+      const p=players.find(x=>x.userId===s.userId);
+      if(!p) return;
+      const pg=playerGeom(p,count);
+      const sk=MultiSkins.find(x=>x.id===p.skin)||MultiSkins[0];
+      let x2=pg.x, y2=H*0.3;
+      const e=s.targetId&&enemies.find(x=>x.id===s.targetId);
+      if(e){ const g=enemyGeom(e,count); x2=g.x; y2=Math.max(6,g.y); }
+      if(s.hit) booms.push({x:x2,y:y2,r:Math.min(60,Math.max(32,pg.L.w*.32)),t:0,dur:.45,col:sk.body,impact:p.impact||'default'});
+      beams.push({x1:pg.x,y1:pg.y-Math.min(30,pg.L.w*.22)*1.1,x2,y2,t:0,dur:.3,miss:!s.hit,fx:p.laser||'default',col:sk.body});
+    },
+    flashBreach(){
+      const f=document.getElementById('multiFlash'); if(!f) return;
+      f.classList.remove('on'); void f.offsetWidth; f.classList.add('on');
+      const a=document.getElementById('multiBreachAlert');
+      if(a){ a.classList.remove('on'); void a.offsetWidth; a.classList.add('on'); }
+    },
+    ping(){ if(!ctx) return; shock=Math.max(shock,.35); }
+  };
+})();
+const MultiUI={
+ open:false, timer:null, ready:false, view:'rooms', currentRoom:null, rooms:[], lastKey:'', fetching:false, roomsFetching:false, lastRoomsAt:0, failCount:0, picCache:{}, seenShots:{}, lastMatchId:null, dismissedMatchId:null, createIsPublic:true, createMax:4,
+ init(){
+  const mb=document.getElementById('multiBtn'); if(mb) mb.addEventListener('click',()=>this.openLobby());
+  const cb=document.getElementById('multiCloseBtn'); if(cb) cb.addEventListener('click',()=>this.close());
+  const cb2=document.getElementById('multiCloseBtn2'); if(cb2) cb2.addEventListener('click',()=>this.close());
+  const rbk=document.getElementById('multiRoomsBackBtn'); if(rbk) rbk.addEventListener('click',()=>this.close());
+  const back=document.getElementById('multiBackBtn'); if(back) back.addEventListener('click',()=>this.backToRooms());
+  const rb=document.getElementById('multiReadyBtn'); if(rb) rb.addEventListener('click',()=>this.toggleReady());
+  const lv=document.getElementById('multiLeaveBtn'); if(lv) lv.addEventListener('click',()=>this.leave());
+   const cs=document.getElementById('multiChatSend'); if(cs) cs.addEventListener('click',()=>this.sendChat());
+   const ci=document.getElementById('multiChatInput'); if(ci) ci.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.sendChat(); } else if(e.key==='Escape'){ this.replyTo=null; this.renderReplyBar(); }});
+   const rc=document.getElementById('multiReplyCancel'); if(rc) rc.addEventListener('click',()=>{ this.replyTo=null; this.renderReplyBar(); });
+  const ab=document.getElementById('multiAnswerBtn'); if(ab) ab.addEventListener('click',()=>this.sendAnswer());
+  const ai=document.getElementById('multiAnswer'); if(ai) ai.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.sendAnswer(); }});
+  const ex=document.getElementById('multiExitBtn'); if(ex) ex.addEventListener('click',()=>{ if(confirm('¿Abandonar la partida? Perderás la racha.')) this.leave(); });
+   const st=document.getElementById('multiStayBtn'); if(st) st.addEventListener('click',async()=>{ this.ready=false; try{ await API.multiReady(false); }catch(e){}
+    // La partida sigue terminada en el servidor, así que sin esto el siguiente
+    // poll volvía a mostrar la tabla al instante y el lobby se veía un rayo.
+    this.dismissedMatchId=this.lastMatchId||null;
+    MultiArena.leave(); this.show('lobby'); this.poll(true); });
+  const qt=document.getElementById('multiQuitBtn'); if(qt) qt.addEventListener('click',()=>this.leave());
+  const cr=document.getElementById('multiCreateBtn'); if(cr) cr.addEventListener('click',()=>this.createRoom());
+  const rn=document.getElementById('multiRoomName'); if(rn) rn.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.createRoom(); }});
+  const sw=document.getElementById('multiPublicSwitch'); if(sw) sw.addEventListener('click',()=>this.toggleCreatePublic());
+  const mx=document.getElementById('multiMaxPick'); if(mx) mx.querySelectorAll('[data-max]').forEach(b=>b.addEventListener('click',()=>this.setCreateMax(b.dataset.max)));
+  const jb=document.getElementById('multiJoinCodeBtn'); if(jb) jb.addEventListener('click',()=>this.joinByCode());
+  const ji=document.getElementById('multiJoinCode'); if(ji) ji.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.joinByCode(); }});
+  const sb=document.getElementById('multiRoomSearchBtn'); if(sb) sb.addEventListener('click',()=>this.loadRooms(true));
+  const si=document.getElementById('multiRoomSearch'); if(si) si.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.loadRooms(true); }});
+  const rsw=document.getElementById('multiRoomPublicSwitch'); if(rsw) rsw.addEventListener('click',()=>this.toggleRoomPublic());
+  const ccb=document.getElementById('multiCopyCodeBtn'); if(ccb) ccb.addEventListener('click',()=>this.copyCode());
+  // ---- RANKED ----
+  const rk=document.getElementById('multiRankedBtn'); if(rk) rk.addEventListener('click',()=>this.toggleRankedPick());
+  const rkc=document.getElementById('multiRankedPickClose'); if(rkc) rkc.addEventListener('click',()=>this.toggleRankedPick(false));
+  document.querySelectorAll('[data-team]').forEach(b=>b.addEventListener('click',()=>this.createRankedRoom(b.dataset.team)));
+  const rkc2=document.getElementById('multiRankedCreateBtn'); if(rkc2) rkc2.addEventListener('click',()=>this.createRankedRoom(this._rkTeam||2));
+  const rkps=document.getElementById('multiRankedPublicSwitch'); if(rkps) rkps.addEventListener('click',()=>this.toggleRankedPublic());
+  const rkn=document.getElementById('multiRankedName'); if(rkn) rkn.addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); this.createRankedRoom(this._rkTeam||2); }});
+ },
+ /* ================= RANKED ================= */
+ rankedTeamLabel(ts){ return ts===4?'2v2':(ts===2?'1v1':''); },
+ toggleRankedPick(force){
+  const p=document.getElementById('multiRankedPick'); if(!p) return;
+  const show=(force===undefined)?p.classList.contains('hidden'):!!force;
+  p.classList.toggle('hidden',!show);
+  if(show) this.loadRankedRooms();
+ },
+ toggleRankedPublic(){
+  this._rkPublic=!(this._rkPublic!==false);
+  const on=this._rkPublic;
+  const tr=document.getElementById('multiRankedPublicTrack'), lb=document.getElementById('multiRankedPublicLabel'), sw=document.getElementById('multiRankedPublicSwitch');
+  if(tr) tr.classList.toggle('on',on);
+  if(lb) lb.textContent=on?'🌍 Pública':'🔒 Privada';
+  if(sw) sw.setAttribute('aria-checked',on?'true':'false');
+ },
+ async loadMyRank(){
+  try{
+   const d=await API.getRank();
+   const r=d.rank||{};
+   const b=document.getElementById('rankedMyRankBadge'), rp=document.getElementById('rankedMyRp'), bar=document.getElementById('rankedMyBar'), nx=document.getElementById('rankedMyNext');
+   if(b){ b.textContent=(r.icon||'')+' '+(r.name||'Bronce III'); b.style.borderColor=r.color||''; b.style.color=r.color||''; }
+   if(rp) rp.textContent=(d.rp||0)+' RP'+(d.position?' · #'+d.position:'');
+   if(bar) bar.style.width=(r.pct||0)+'%';
+   if(nx) nx.textContent=r.next?((r.into||0)+' / '+(r.span||0)+' RP → '+r.next.name):('MÁXIMO');
+  }catch(e){}
+ },
+ async loadRankedRooms(){
+  this.loadMyRank();
+  const el=document.getElementById('multiRankedList'); if(!el) return;
+  try{
+   const d=await API.multiRooms('');
+   const list=(d.rooms||[]).filter(r=>r.isRanked);
+   if(!list.length){ el.innerHTML='<p class="lobby-info dim" style="text-align:center">No hay salas ranked activas. ¡Creá la tuya! 👆</p>'; return; }
+   el.innerHTML=list.map(r=>{
+    const full=r.players>=r.maxPlayers;
+    const lbl=this.rankedTeamLabel(r.teamSize);
+    let act;
+    if(full) act='<button class="btn btn-ghost btn-sm" disabled>🚫 LLENA</button>';
+    else if(r.status==='playing') act='<button class="btn btn-ghost btn-sm" disabled>⚔️ EN BATALLA</button>';
+    else act='<button class="btn btn-primary btn-sm" data-rkjoin="'+r.id+'">▶ UNIRSE ('+r.players+'/'+r.maxPlayers+')</button>';
+    return '<div class="lobby-room-card">'+
+      '<div class="lrc-main"><b>'+this.esc(r.name)+'</b>'+
+      '<small>'+(lbl?('🏅 '+lbl):'')+' · 👥 '+r.players+'/'+r.maxPlayers+' · 👤 '+this.esc(r.ownerName||'?')+'</small></div>'+
+      act+'</div>';
+   }).join('');
+   el.querySelectorAll('[data-rkjoin]').forEach(b=>b.addEventListener('click',()=>this.joinRankedRoom(b.dataset.rkjoin)));
+  }catch(e){ el.innerHTML='<p class="lobby-info dim" style="text-align:center">Error al cargar salas ranked.</p>'; }
+ },
+ async createRankedRoom(team){
+  team=(Number(team)===4)?4:2;
+  this._rkTeam=team;
+  // Default sensato: el nombre sigue al formato elegido.
+  const inp=document.getElementById('multiRankedName');
+  if(inp&&!inp.value.trim()) inp.value='RANKED '+(team===4?'2v2':'1v1');
+  const nm=(inp&&inp.value.trim())||('RANKED '+(team===4?'2v2':'1v1'));
+  const btn=document.getElementById('multiRankedCreateBtn'); if(btn) btn.disabled=true;
+  try{
+   await API.multiCreateRoom(nm,this._rkPublic!==false,'normal',team,true,team);
+   this.toggleRankedPick(false);
+   await this.poll(true);
+   this.show('lobby');
+   Toast.success('🏅 Sala RANKED '+(team===4?'2v2':'1v1')+' creada');
+  }catch(e){ Toast.error(e.message||'Error'); }
+  finally{ if(btn) btn.disabled=false; }
+ },
+ async joinRankedRoom(id){
+   try{
+    const r=await API.multiJoinRoom(id,'');
+    this.currentRoom=r.room; this.ready=false;
+    this.toggleRankedPick(false);
+    this.show('lobby'); await this.poll(true);
+   }catch(e){ Toast.error(e.message||'Error'); }
+  },
+  toggleCreatePublic(){
+   this.createIsPublic=!this.createIsPublic;
+   const tr=document.getElementById('multiPublicTrack'), lb=document.getElementById('multiPublicLabel'), hint=document.getElementById('multiPublicHint'), sw=document.getElementById('multiPublicSwitch');
+   if(tr) tr.classList.toggle('on',this.createIsPublic);
+   if(lb) lb.textContent=this.createIsPublic?'🌍 Pública':'🔒 Privada';
+   if(sw) sw.setAttribute('aria-checked',this.createIsPublic?'true':'false');
+   if(hint) hint.innerHTML=this.createIsPublic?'🌍 <b>Pública:</b> aparece en el buscador y cualquiera se une con 1 click.':'🔒 <b>Privada:</b> NO aparece en el buscador, se genera un código que solo el creador comparte.';
+  },
+ setCreateMax(m){
+  m=Math.min(4,Math.max(2,Math.round(Number(m)||4)));
+  this.createMax=m;
+  const mx=document.getElementById('multiMaxPick');
+  if(mx) mx.querySelectorAll('[data-max]').forEach(b=>b.classList.toggle('active',Number(b.dataset.max)===m));
+ },
+ async toggleRoomPublic(){
+  if(!this.currentRoom){ return; }
+  if(!this.currentRoom.isOwner){ Toast.info('Solo el creador puede cambiar la privacidad'); return; }
+  const want=!this.currentRoom.isPublic;
+  try{ const r=await API.multiUpdateRoom({isPublic:want}); if(r&&r.room){ this.currentRoom=r.room; this.renderRoomHeader(); Toast.success(want?'🌍 Sala pública':'🔒 Sala privada'); } }catch(e){ Toast.error(e.message); }
+  this.poll(true);
+ },
+ copyCode(){
+  const i=document.getElementById('multiCodeInput');
+  const code=(i&&i.value)||(this.currentRoom&&this.currentRoom.code)||'';
+  if(!code){ Toast.info('Esta sala es pública, no tiene código'); return; }
+  const done=()=>Toast.success('📋 Código copiado: '+code);
+  try{
+    if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(code).then(done).catch(()=>{ i.select(); document.execCommand('copy'); done(); });
+    else { i.select(); document.execCommand('copy'); done(); }
+  }catch(e){ try{ i.select(); document.execCommand('copy'); done(); }catch(ee){ Toast.info('Código: '+code); } }
+ },
+  async createRoom(){
+   const inp=document.getElementById('multiRoomName');
+   const name=(inp?inp.value:'').trim();
+   if(name.length<3){ Toast.error('Poné un nombre de 3+ letras'); if(inp) inp.focus(); return; }
+   const btn=document.getElementById('multiCreateBtn');
+   const btnOrig=btn?btn.innerHTML:'';
+   if(btn){ btn.disabled=true; btn.innerHTML='<span>⏳ CREANDO...</span><small>TRANSMITIENDO ▶</small>'; }
+   try{
+     const r=await API.multiCreateRoom(name,this.createIsPublic,'normal',this.createMax);
+     if(inp) inp.value='';
+     this.currentRoom=r.room; this.ready=false;
+     this.show('lobby'); this.poll(true);
+     Toast.success((r.room.isPublic?'🌍 Sala pública creada: ':'🔒 Sala privada creada: ')+r.room.name);
+   }catch(e){ Toast.error(e.message); }
+   finally{ if(btn){ btn.disabled=false; btn.innerHTML=btnOrig||'<span>➕ CREAR Y ENTRAR</span><small>PRESS START ▶</small>'; } }
+  },
+ async joinRoom(roomId,isPublic){
+  if(!isPublic){ Toast.info('🔒 Sala privada: pedí el código al creador e ingresalo arriba'); const ji=document.getElementById('multiJoinCode'); if(ji) ji.focus(); return; }
+  try{ const r=await API.multiJoinRoom(roomId,''); this.currentRoom=r.room; this.ready=false; this.show('lobby'); this.poll(true); Toast.success('Entraste a '+r.room.name); }
+  catch(e){ Toast.error(e.message); }
+ },
+ async joinByCode(){
+  const inp=document.getElementById('multiJoinCode');
+  const code=(inp?inp.value:'').trim().toUpperCase();
+  if(!code){ Toast.error('Pegá el código de la sala privada'); return; }
+  try{ const r=await API.multiJoinRoom('',code); if(inp) inp.value=''; this.currentRoom=r.room; this.ready=false; this.show('lobby'); this.poll(true); Toast.success('Entraste a '+r.room.name); }
+  catch(e){ Toast.error(e.message); }
+ },
+  async loadRooms(force){
+   if(this.roomsFetching) return;
+   const now=Date.now();
+   if(!force && now-this.lastRoomsAt<2500) return;
+   this.roomsFetching=true;
+   try{
+     const q=(document.getElementById('multiRoomSearch')||{}).value||'';
+     const d=await API.multiRooms(q.trim());
+     const next=d.rooms||[];
+     const key=JSON.stringify(next.map(r=>[r.id,r.name,r.players,r.maxPlayers,r.isPublic,r.mode,r.status,r.ownerName]));
+     if(force===true||key!==this._roomsKey){
+       this.rooms=next; this._roomsKey=key; this.lastRoomsAt=Date.now();
+       this.renderRooms();
+     } else {
+       this.rooms=next; this.lastRoomsAt=Date.now();
+     }
+   }catch(e){ const l=document.getElementById('multiRoomsList'); if(l&&!this.rooms.length) l.innerHTML='<p class="hint">Sin conexión... reintentando</p>'; }
+   finally{ this.roomsFetching=false; }
+  },
+ renderRooms(){
+   const box=document.getElementById('multiRoomsList'); if(!box) return;
+   const badge=document.getElementById('lobbyCountBadge'); if(badge) badge.textContent=this.rooms.length;
+   if(!this.rooms.length){ box.innerHTML='<div class="lobby-empty"><span class="lobby-empty-ico">🛸</span><p class="hint">📭 Sin salas en este sector.<br>¡Creá la tuya arriba y sé el primer piloto! 👆</p></div>'; return; }
+   box.innerHTML=this.rooms.map((r,i)=>{
+     const pub=!!r.isPublic;
+     const mx=r.maxPlayers||4;
+     const full=(r.players||0)>=mx;
+     const playing=r.status==='playing';
+     const modeBadge='<span class="lobby-badge mode-n">▶ JUGAR</span>';
+     const privBadge=pub?'<span class="lobby-badge pub">🌍 PÚBLICA</span>':'<span class="lobby-badge priv">🔒 PRIVADA</span>';
+     const st=playing?'<span class="lobby-badge fighting">⚔️ EN BATALLA</span>':'<span class="lobby-badge live-b">🟢 LOBBY</span>';
+     const capBadge='<span class="lobby-badge">👥 '+r.players+'/'+mx+'</span>';
+     let btn;
+     if(!pub) btn='<button class="btn btn-ghost btn-sm lobby-join-btn locked" data-priv="'+r.id+'" title="Sala privada: necesitás el código">🔒 CÓDIGO</button>';
+     else if(full) btn='<button class="btn btn-ghost btn-sm" disabled title="Sala llena">🚫 LLENA</button>';
+     else if(playing) btn='<button class="btn btn-ghost btn-sm" disabled title="Ya están jugando">⚔️ ...</button>';
+     else btn='<button class="btn btn-primary btn-sm lobby-join-btn" data-join="'+r.id+'">▶ UNIRSE</button>';
+     return '<div class="lobby-room-card'+(playing?' status-playing':'')+'"><div class="lobby-room-main"><p class="lobby-room-name">🚀 '+this.esc(r.name)+'</p><div class="lobby-room-meta"><span class="lobby-badge owner">👑 '+this.esc(r.ownerName||'?')+'</span>'+capBadge+privBadge+modeBadge+st+'</div></div>'+btn+'</div>';
+   }).join('');
+   box.querySelectorAll('[data-join]').forEach(b=>b.addEventListener('click',()=>this.joinRoom(b.dataset.join,true)));
+   box.querySelectorAll('[data-priv]').forEach(b=>b.addEventListener('click',()=>this.joinRoom(b.dataset.priv,false)));
+  },
+ renderRoomHeader(){
+  const r=this.currentRoom; if(!r) return;
+  const t=document.getElementById('multiRoomTitle');
+  const rkTag=r.isRanked?(' · 🏅 RANKED '+((r.teamSize===4)?'2v2':'1v1')):'';
+  if(t) t.innerHTML='🚀 '+this.esc(r.name||'LOBBY')+' · '+(r.isPublic?'🌍 Pública':'🔒 Privada')+rkTag+' · 👥 '+(r.players!=null?r.players:'?')+'/'+(r.maxPlayers||4)+' · 👑 '+this.esc(r.ownerName||'');
+  const bar=document.getElementById('multiOwnerBar');
+  if(bar) bar.classList.toggle('hidden',!r.isOwner);
+  const sw=document.getElementById('multiRoomPublicSwitch'), tr=document.getElementById('multiRoomPublicTrack'), lb=document.getElementById('multiRoomPublicLabel');
+  if(tr) tr.classList.toggle('on',!!r.isPublic);
+  if(lb) lb.textContent=r.isPublic?'🌍 Pública':'🔒 Privada';
+  if(sw) sw.setAttribute('aria-checked',r.isPublic?'true':'false');
+  const codeBox=document.getElementById('multiCodeBox'), codeInp=document.getElementById('multiCodeInput');
+  const showCode=!!(r.isOwner&&!r.isPublic&&r.code);
+  if(codeBox) codeBox.classList.toggle('hidden',!showCode);
+  if(codeInp&&showCode) codeInp.value=r.code||'';
+ },
+ async openLobby(){
+  if(typeof Auth==='undefined'||!Auth.isLogged){ Toast.info('Inicia sesión para jugar online'); return; }
+  document.getElementById('multiOverlay').classList.remove('hidden');
+  this.open=true; this.ready=false; this.currentRoom=null; this.lastKey=''; this.seenShots={}; this.lastMatchId=null; this.dismissedMatchId=null; this._rankRefreshedFor=null;
+  this.show('rooms');
+  this.failCount=0;
+  await this.loadRooms(true);
+  this.poll(true);
+  if(this.timer) clearInterval(this.timer);
+  this.timer=setInterval(()=>this.poll(),1500);
+ },
+ async backToRooms(){
+  try{ await API.multiLeave(); }catch(e){}
+  this.ready=false; this.currentRoom=null; this.lastKey=''; this.seenShots={}; this.lastMatchId=null; this.dismissedMatchId=null; this._rankRefreshedFor=null;
+  const rb=document.getElementById('multiReadyBtn'); if(rb) rb.textContent='✅ ¡LISTO!';
+  this.show('rooms');
+  this.loadRooms(true);
+  this.poll(true);
+ },
+  close(){
+   document.getElementById('multiOverlay').classList.add('hidden');
+   this.open=false; MultiArena.leave();
+   if(this.timer){ clearInterval(this.timer); this.timer=null; }
+  },
+ async leave(){
+  try{ await API.multiLeave(); }catch(e){}
+  this.ready=false; this.currentRoom=null;
+  const rb=document.getElementById('multiReadyBtn'); if(rb) rb.textContent='✅ ¡LISTO!';
+  this.show('rooms');
+  this.loadRooms(true);
+ },
+  async toggleReady(){
+   this.ready=!this.ready;
+   const btn=document.getElementById('multiReadyBtn');
+   if(btn){ btn.textContent=this.ready?'⏳ Cancelar listo':'✅ ¡LISTO!'; btn.disabled=true; }
+   try{ await API.multiReady(this.ready); }catch(e){ this.ready=!this.ready; if(btn) btn.textContent=this.ready?'⏳ Cancelar listo':'✅ ¡LISTO!'; Toast.error(e.message); if(btn) btn.disabled=false; return; }
+   if(btn) btn.disabled=false;
+   this.poll(true);
+  },
+ show(which){
+   this.view=which;
+   ['multiRooms','multiLobby','multiBattle','multiResults'].forEach(id=>{ const el=document.getElementById(id); if(el) el.classList.add('hidden'); });
+   if(which==='rooms'){ const el=document.getElementById('multiRooms'); if(el) el.classList.remove('hidden'); }
+   if(which==='lobby'){ const el=document.getElementById('multiLobby'); if(el) el.classList.remove('hidden'); }
+   if(which==='battle'){ const el=document.getElementById('multiBattle'); if(el) el.classList.remove('hidden'); }
+   if(which==='results'){ const el=document.getElementById('multiResults'); if(el) el.classList.remove('hidden'); }
+ },
+  esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':String(s); return d.innerHTML; },
+  renderMultiBody(raw){
+   const t=String(raw==null?'':raw);
+   if(t.startsWith('[sticker]')) return '<div class="chat-sticker">'+this.esc(t.slice(9,20))+'</div>';
+   return this.esc(t);
+  },
+  setReplyTo(m){
+   if(!m){ this.replyTo=null; this.renderReplyBar(); return; }
+   this.replyTo={userId:m.userId||'',username:m.username||'?',text:ChatReply.decode(m.text).text};
+   this.renderReplyBar();
+   const i=document.getElementById('multiChatInput'); if(i) i.focus();
+  },
+  renderReplyBar(){
+   const bar=document.getElementById('multiReplyBar'); if(!bar) return;
+   const r=this.replyTo;
+   bar.classList.toggle('hidden',!r);
+   if(!r) return;
+   const t=document.getElementById('multiReplyText');
+   if(t) t.textContent=ChatReply.preview(r);
+  },
+ catColor(c){ return c==='HTML'?'#ff7043':(c==='CSS'?'#40c4ff':'#ffd600'); },
+ skinById(id){ return MultiSkins.find(s=>s.id===id)||MultiSkins[0]; },
+ shipHtml(skinId, alive){
+   if(!alive) return '<div class="multi-ship dead">💥</div>';
+   const sk=this.skinById(skinId||'default');
+   const hull=(sk&&sk.hull)||'arrow';
+   const path=(typeof Hulls!=='undefined')?Hulls.svgPath(hull):'M0,-22 L-20,18 L-7,10 L0,16 L7,10 L20,18 Z';
+   return '<div class="multi-ship alive" title="'+this.esc(skinId||'default')+'"><svg width="44" height="38" viewBox="-32 -32 64 64" style="filter:drop-shadow(0 0 8px '+(sk?sk.glow:'#00e5ff')+')"><path d="'+path+'" fill="'+(sk?sk.body:'#00e5ff')+'" stroke="rgba(255,255,255,.85)" stroke-width="1.2"/><circle cx="0" cy="-5" r="4.5" fill="'+(sk?sk.accent:'#80d8ff')+'" stroke="#fff" stroke-width=".8"/><path d="M-6,14 L0,22 L6,14 Z" fill="'+(sk&&sk.fire?sk.fire:'#ff6d00')+'" opacity=".95"/></svg></div>';
+  },
+ picFetching:{},
+ picHtml(p){
+  if(p.profilePic) this.picCache[p.userId]=p.profilePic;
+  if(!this.picCache[p.userId]){
+    try{
+      const meId=(typeof Auth!=='undefined'&&Auth.user&&Auth.user.id)||null;
+      if(p.userId===meId){
+        const own=(typeof Auth!=='undefined'&&Auth.user&&Auth.user.profilePic)||(typeof Profile!=='undefined'&&Profile.user&&Profile.user.profilePic)||'';
+        if(own) this.picCache[p.userId]=own;
+      }
+    }catch(e){}
+  }
+  const src=p.profilePic||this.picCache[p.userId]||'';
+  if(!src&&(p.hasPic)&&p.userId&&!this.picFetching[p.userId]){
+    this.picFetching[p.userId]=1;
+    fetch('/api/user/'+encodeURIComponent(p.userId)).then(r=>r.json()).then(u=>{
+      if(u&&u.profilePic){ this.picCache[p.userId]=u.profilePic;
+        document.querySelectorAll('.multi-avatar[data-pic="'+p.userId+'"]').forEach(av=>{ av.innerHTML='<img src="'+u.profilePic.replace(/"/g,'&quot;')+'" loading="lazy" alt="">'; });
+      }
+    }).catch(()=>{}).finally(()=>{ delete this.picFetching[p.userId]; });
+  }
+  const pic=src?'<img src="'+src.replace(/"/g,'&quot;')+'" loading="lazy" alt="">':'<span>👾</span>';
+  return pic;
+ },
+ async poll(force){
+  if(!this.open||this.fetching) return;
+  this.fetching=true;
+  let d; try{ d=await API.multiState(); this.failCount=0; }catch(e){ this.fetching=false; this.failCount=(this.failCount||0)+1; if(this.failCount===2) Toast.error('Internet lento... reintentando'); return; }
+  this.fetching=false;
+  if(!d.room){
+    this.currentRoom=null;
+    if(this.view!=='rooms') this.show('rooms');
+    this.loadRooms(force===true);
+    return;
+  }
+  const roomId=d.room.id||d.room.name||'';
+  if(roomId!==this._roomId){ this._roomId=roomId; this._lobbyKey=null; this._chatKey=null; }
+  this.currentRoom=d.room;
+  this.renderRoomHeader();
+  const me=d.me;
+  const lobby=d.lobby||[]; const match=d.match; const chat=d.chat||[];
+  const lp=document.getElementById('multiPlayers');
+  if(lp){
+    const lkey=lobby.map(p=>p.userId+':'+(p.ready?1:0)+':'+(p.username||'')).join('|')||'empty';
+    if(force===true||lkey!==this._lobbyKey){
+      this._lobbyKey=lkey;
+      if(!lobby.length) lp.innerHTML='<p class="hint empty-hint">🚀 Sala vacía. ¡Compartí el nombre o el código e invita a tu escuadrón!</p>';
+      else lp.innerHTML=lobby.map(p=>{
+        const pic=this.picHtml(p);
+        return '<div class="multi-player'+(p.ready?' is-ready':'')+'"><div class="multi-avatar frame-'+(p.frame||'none')+'" data-pic="'+p.userId+'">'+pic+'</div><p class="multi-name">'+this.esc(p.username)+'</p><span class="status-pill '+(p.ready?'online':'offline')+'">'+(p.ready?'✅ LISTO':'⏳ esperando')+'</span>'+(p.userId===me?'<span class="mini-badge">TÚ</span>':'')+((d.room&&d.room.ownerId===p.userId)?'<span class="mini-badge">👑 CREADOR</span>':'')+'</div>';
+      }).join('');
+    }
+  }
+  const cb=document.getElementById('multiChatBox');
+  if(cb){
+    if(!cb.dataset.scrollBound){
+      cb.dataset.scrollBound='1';
+      cb.addEventListener('scroll',()=>{
+        cb.dataset.userAtBottom=(cb.scrollTop+cb.clientHeight>=cb.scrollHeight-60)?'1':'0';
+     },{passive:true});
+    }
+    const last=chat[chat.length-1];
+    const ckey=chat.length+'|'+(last?((last.id||'')+'|'+(last.createdAt||'')+'|'+String(last.text||'').slice(-80)):'empty');
+    if(force===true||ckey!==this._chatKey){
+      this._chatKey=ckey;
+      const prevTop=cb.scrollTop;
+      const nearBottom=cb.dataset.userAtBottom!=='0'||(cb.scrollTop+cb.clientHeight>=cb.scrollHeight-60);
+      cb.innerHTML=chat.length?chat.map(m=>{
+        if(m.userId==='sys') return '<div class="chat-msg sys"><div class="chat-text">🤖 '+this.esc(m.text)+'</div></div>';
+        const dec=ChatReply.decode(m.text);
+        let body=this.renderMultiBody(dec.text);
+        if(dec.reply) body='<div class="chat-quote"><span class="chat-quote-arrow">↩</span><span class="chat-quote-text">'+this.esc(ChatReply.preview(dec.reply))+'</span></div><div class="chat-reply-body">'+body+'</div>';
+        const bub=(m.equippedBubble&&m.equippedBubble!=='none')?' chat-bubble-wrap bubble-'+m.equippedBubble:'';
+        const flag=(m.userId!==me)?'<button class="chat-flag" data-rep="'+m.userId+'" data-name="'+this.esc(m.username).replace(/"/g,'&quot;')+'" title="Denunciar jugador">🚩</button>':'';
+        return '<div class="chat-msg" data-mid="'+m.id+'"><div class="chat-body"><div class="chat-head"><span class="chat-user" style="color:'+this.esc(m.nameColor||'#00e5ff')+'">'+this.esc(m.username)+'</span><button class="chat-reply-btn" data-mreply="'+m.id+'" title="Responder">↩</button>'+flag+'</div><div class="chat-text'+bub+'">'+body+'</div></div></div>';
+      }).join(''):'<p class="hint">Sin mensajes. ¡Saluda! 👋</p>';
+      cb.querySelectorAll('.chat-flag').forEach(b=>b.addEventListener('click',()=>{ if(typeof Report!=='undefined') Report.open(b.dataset.rep,b.dataset.name); }));
+      cb.querySelectorAll('[data-mreply]').forEach(b=>b.addEventListener('click',()=>{
+        const m=chat.find(x=>x.id===b.dataset.mreply);
+        if(m) this.setReplyTo({userId:m.userId,username:m.username,text:m.text});
+      }));
+      if(nearBottom) requestAnimationFrame(()=>{ cb.scrollTop=cb.scrollHeight; });
+      else cb.scrollTop=prevTop;
+    }
+  }
+   if(!match){ MultiArena.leave(); this.show('lobby'); this.lastKey=''; this.seenShots={}; this.lastMatchId=null; this.dismissedMatchId=null; this._rankRefreshedFor=null; return; }
+   if(match.status==='playing'){
+     if(this.lastMatchId!==match.id){ this.lastMatchId=match.id; this.dismissedMatchId=null; this.seenShots={}; }
+     this._lastMatch=match; this._me=me;
+     this.show('battle');
+     MultiArena.enter(match.id);
+     MultiArena.setState(match,me,d.now);
+     // Trayectorias de los disparos de todos: se ve a quién le pegó a qué.
+     (match.shots||[]).forEach(s=>{
+      if(this.seenShots[s.id]) return; this.seenShots[s.id]=1;
+      if(s.userId!==me) MultiArena.remoteFire(s);
+     });
+     const my=match.players.find(p=>p.userId===me);
+     const banner=document.getElementById('multiWaveBanner');
+     if(banner) banner.textContent=!my
+       ? '⏳ LA PARTIDA YA EMPEZÓ — mirá cómo juegan y esperá la próxima'
+        : ('⚔️ OLEADA '+(match.wave||1)+
+          ' · 👾 '+(match.enemies||[]).length+' naves · 🛡️ '+lives+' '+('❤️'.repeat(Math.max(0,lives))||'💀'));
+     const hud=document.getElementById('multiHud');
+     if(hud){
+       const hkey=(match.players||[]).map(p=>p.userId+':'+p.lives+':'+p.kills+':'+p.streak).join('|')+'|'+(match.wave||1);
+       if(force||hkey!==this._hudKey){
+         this._hudKey=hkey;
+         hud.innerHTML=(match.players||[]).map(p=>{
+           const isMe=p.userId===me; const pic=this.picHtml(p); const lv=Math.max(0,p.lives==null?2:p.lives);
+           const out=lv<=0||p.aliveNow===false;
+           return '<div class="multi-hud-card'+(isMe?' me':'')+(out?' out':'')+'"><div class="multi-avatar small frame-'+(p.frame||'none')+'" data-pic="'+p.userId+'">'+pic+'</div><div class="multi-hud-info"><p class="multi-name" style="color:'+this.esc(p.nameColor||'#00e5ff')+'">'+this.esc(p.username)+(isMe?' (TÚ)':'')+(p.aliveNow===false?' (salió)':'')+'</p><p class="hint">🛡️ '+(lv>0?'❤️'.repeat(lv):'💀')+' · 💥 '+p.kills+' · 🔥 '+p.streak+' · ❌ '+p.misses+'</p></div></div>';
+         }).join('');
+       }
+     }
+     const ai=document.getElementById('multiAnswer');
+     if(ai&&!my){ ai.disabled=true; ai.placeholder='⏳ Estás mirando: la próxima partida empieza en el lobby'; }
+     else if(my&&lives<=0&&ai){ ai.disabled=true; ai.placeholder='💀 Sin vidas — esperá a tus compañeros…'; }
+     else if(ai){ ai.disabled=false; ai.placeholder='Escribe la etiqueta para disparar... (Enter)'; }
+} else if(match.status==='finished'){
+     MultiArena.leave();
+     // El jugador ya poda esta partida ("Volver al lobby"): la tabla no vuelve
+     // a aparecer hasta que empiece una partida nueva.
+     if(this.dismissedMatchId===match.id){ this.show('lobby'); return; }
+     // Al terminar la tabla: una sola vez por partida se recarga la sesión para
+     // que el RANGO y los RP que se ganaron aparezcan ya actualizados en el
+     // perfil y en la clasificación (antes había que recargar la página).
+     if(this._rankRefreshedFor!==match.id){
+       this._rankRefreshedFor=match.id;
+       try{ if(typeof Auth!=='undefined'&&Auth.restoreSession) await Auth.restoreSession(); }catch(e){}
+     }
+     this.show('results');
+     // Orden final: gana el que destruyó más naves enemigas; a igual cantidad
+     // se rompe con menos errores.
+     const arr=[...match.players].sort((a,b)=>(b.kills-a.kills)||(a.misses-b.misses));
+     const winIds=match.winnerIds&&match.winnerIds.length?match.winnerIds:(match.winnerId?[match.winnerId]:[]);
+     const isWinner=p=>winIds.indexOf(p.userId)>=0;
+     const head=winIds.length===0?'<p class="hint" style="text-align:center;margin-bottom:10px">Partida terminada</p>'
+       :(winIds.length>1?'<p class="hint" style="text-align:center;margin-bottom:10px">🤝 ¡Empate en el primer lugar!</p>'
+                     :'<p class="hint" style="text-align:center;margin-bottom:10px">🏆 Ganó <b>'+this.esc((arr[0]||{}).username||'')+'</b> con '+((arr[0]||{}).kills||0)+' naves destruidas</p>');
+     const table=document.getElementById('multiTable');
+     if(table) table.innerHTML=head+'<div class="multi-table">'+arr.map((p,i)=>{
+       const medal=isWinner(p)?'🥇':(i===0?'🥈':(i===1?'🥉':(i+1)+'°'));
+       const pic=this.picHtml(p);
+       return '<div class="multi-row'+(isWinner(p)?' winner':'')+'"><span class="multi-pos">'+medal+'</span><div class="multi-avatar small frame-'+(p.frame||'none')+'" data-pic="'+p.userId+'">'+pic+'</div><span class="multi-name">'+this.esc(p.username)+'</span><span class="mini-badge">🌊 oleada '+(match.wave||1)+'</span><span class="mini-badge">💥 '+p.kills+' destruidas</span><span class="mini-badge">⭐ '+(p.score||((p.kills||0)*100+(p.best||0)*25))+' pts</span><span class="mini-badge">🔥 racha '+p.best+'</span><span class="mini-badge">❌ '+p.misses+'</span><span class="mini-badge">+'+(p.expWon||0)+' EXP · +'+(p.coinsWon||0)+' pts</span>'+(match.isRanked?('<span class="mini-badge rank-badge-sm">🏅 +'+(p.rpWon||0)+' RP</span>'):'')+'</div>';
+     }).join('')+'</div>'+'<p class="hint" style="text-align:center;margin-top:12px">Cuando quieras otra partida: <b>🔄 Volver al lobby</b> y presioná <b>¡LISTO!</b> otra vez.</p>';
+     this.ready=false;
+     const rb=document.getElementById('multiReadyBtn'); if(rb) rb.textContent='✅ ¡LISTO!';
+   }
+  },
+  async sendChat(){
+   const i=document.getElementById('multiChatInput'); const t=(i.value||'').trim(); if(!t) return;
+   const reply=this.replyTo;
+   try{
+    await API.multiChatSend(ChatReply.encode(reply,t));
+    i.value=''; this.replyTo=null; this.renderReplyBar();
+    this.poll(true);
+   }catch(e){ Toast.error(e.message); }
+  },
+  feedback(txt,kind){
+   const el=document.getElementById('multiFeedback'); if(!el) return;
+   el.textContent=txt||'';
+   el.style.color=kind==='bad'?'#ff6b81':(kind==='good'?'#00e676':'#9fb3c8');
+   clearTimeout(this._fbT);
+   if(txt) this._fbT=setTimeout(()=>{ if(el.textContent===txt) el.textContent=''; },2600);
+  },
+  // Dispara la respuesta escrita contra las naves de la pantalla.
+  async sendAnswer(){
+   const inp=document.getElementById('multiAnswer'); const t=(inp.value||'').trim();
+   if(!t) return;
+   if(this._answerBusy) return;
+   const my=(this._lastMatch&&this._lastMatch.players||[]).find(p=>p.userId===this._me);
+   if(!this._lastMatch||this._lastMatch.status!=='playing'){ this.feedback('⚠️ No hay partida en curso','bad'); return; }
+   if(my&&(my.lives==null?2:my.lives)<=0){ this.feedback('💀 Te quedaste sin vidas','bad'); return; }
+   this._answerBusy=true;
+   try{
+    const r=await API.multiAnswer(t);
+    inp.value='';
+    if(r.hit){
+     const k=r.killed||{};
+     MultiArena.fire(k,false);
+     this.feedback('💥 ¡'+this.esc((k.q||'').slice(0,24))+' → '+k.a+'!  ('+r.kills+')','good');
+    }else{
+     MultiArena.fire(null,true);
+     this.feedback('❌ Fallaste: -1 vida · '+r.misses+' errores','bad');
+     if(r.out) this.feedback('💀 Te quedaste sin vidas','bad');
+    }
+   }catch(e){ this.feedback('⚠️ '+(e.message||'error'),'bad'); }
+   finally{
+    this._answerBusy=false;
+    this.poll(true);
+    if(inp&&document.activeElement!==inp&&!inp.disabled) inp.focus();
+   }
+  }
+};
+document.addEventListener('DOMContentLoaded',()=>MultiUI.init());

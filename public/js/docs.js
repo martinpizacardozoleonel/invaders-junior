@@ -1,0 +1,198 @@
+﻿const Docs = {
+  sections: [
+    {
+      icon: '👾',
+      title: '¿Qué es Code Invaders?',
+      content: `
+        <p>Code Invaders es un <b>juego estilo Galaga</b> donde defendes la galaxia programando.</p>
+        <p>Naves enemigas se acercan con preguntas. Tu misión: escribir la respuesta correcta para destruirlas.</p>
+        <ul>
+          <li><b>7 niveles</b>: 4 normales (HTML, CSS, JS y el nivel 7 en la galaxia 2) + <b>3 JEFES</b> (Nivel 4 esquivar, Nivel 5 CSS, Nivel 6 JavaScript)</li>
+          <li><b>Un jugador</b> o <b>multijugador online</b> en salas de 2 a 4 pilotos</li>
+          <li><b>Amigos + Chat</b> global y privado, notificaciones campanita</li>
+          <li><b>Personalización:</b> tienda skins, marcos, color de nombre (3000+ EXP), fondo de chat</li>
+          <li><b>Ranking competitivo</b> por niveles → EXP → intentos. Torneo 15 días a las 00:00</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🎯',
+      title: 'Modos de juego: Un jugador y Multijugador',
+      content: `
+        <p>El menú principal ofrece estas opciones:</p>
+        <ul>
+          <li><b>👤 UN JUGADOR:</b> 3 niveles (HTML, CSS, JS) + <b>Nivel 4: 👑 JEFE FINAL</b> (esquivar por toda la pantalla, 12 HP) + <b>Nivel 5: 👑 JEFE CSS</b> (estacionario, tira 2 naves CSS, 10 HP, -2 por oleada) + <b>Nivel 6: 🤖 JEFE JAVASCRIPT</b> (3 etapas y portal) + <b>Nivel 7: 🌌 GALAXIA 2</b> (13 enemigos). 20s de gracia antes de que avancen, vidas = 2.</li>
+          <li><b>🌐 MULTIJUGADOR:</b> salas online de 2 a 4 pilotos. Podés crear una sala pública o privada, unirte con un código o entrar a una ranked 1v1 / 2v2.</li>
+          <li><b>📅 RETO DIARIO:</b> dos desafíos nuevos por día (Fácil y Difícil) con preguntas iguales para todos.</li>
+          <li><b>🗺️ NIVELES:</b> elegís cualquier nivel y la dificultad antes de entrar.</li>
+          <li><b>🎈 CALENTAMIENTO:</b> partida corta de 6 naves con las etiquetas HTML más fáciles, pensada para probar antes del nivel 1. No cuenta para el progreso, el ranking ni los logros.</li>
+          <li><b>🎓 MI NIVEL:</b> cambiás tu experiencia (Principiante, Intermedio o Avanzado) y volvés a ver el tutorial.</li>
+        </ul>
+        <p>Tras ganar el Jefe Final (4) pasás automático al Jefe CSS (5), después al Jefe JavaScript (6) y de ahí cruzás el portal a la <b>galaxia 2</b> con el nivel 7. Solo al ganar el nivel 7 termina el juego.</p>
+      `
+    },
+    {
+      icon: '👑',
+      title: 'Jefe Final (Nivel 4) — Esquivar',
+      content: `
+        <p>El Prof. Froggio 🐸 ahora se mueve <b>por todos lados</b> (rebota en X e Y).</p>
+        <ul>
+          <li>Te lanza etiquetas que caen (HTML/CSS/JS/Python).</li>
+          <li><b>⬅ ➡</b> para esquivar.</li>
+          <li>Recogé 🔫 balas (SPACE dispara), ❓ preguntas (+3 balas), 💀 trampas (-1 vida o invertido).</li>
+          <li>12 HP → al 0 pasás al siguiente jefe.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🎨',
+      title: 'Jefe CSS (Nivel 5) — Nuevo',
+      content: `
+        <p>Jefe estacionario azul con burbuja.</p>
+        <ul>
+          <li>Tira <b>2 naves CSS</b> a la vez que bajan velocidad normal (como nivel 3).</li>
+          <li>Escribí la etiqueta CSS (<code>color</code>, <code>margin</code>...) para destruirlas.</li>
+          <li>Si matás las 2 → jefe pierde <b>-2 HP</b> (de 10) y reacciona: <i>“¡Que burro! 😂”</i> si fallás, <i>“¡Me enojo! 🔥”</i> si le pegás.</li>
+          <li>10 HP → al 0 pasás al nivel 6.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🤖',
+      title: 'Jefe JavaScript (Nivel 6) + portal',
+      content: `
+        <p>El jefe más enredado del juego: no se le dispara a él, hay que sacarle las naves que va tirando y cada etapa es más difícil.</p>
+        <ul>
+          <li><b>Etapa 1:</b> tira <b>4 naves con etiqueta HTML</b> (<code>&lt;h1&gt;</code>, <code>&lt;p&gt;</code>…). Escribí la etiqueta y <b>ENTER</b> para destroyirla.</li>
+          <li><b>Etapa 2:</b> se enoja y tira <b>2 naves con 3 de vida</b> y etiquetas HTML aleatorias: hay que escribir su código <b>3 veces</b> mientras bajan normal.</li>
+          <li><b>Etapa 3 — FURIOSO:</b> la galaxia <b>se sacude</b> y entran <b>5 naves con etiqueta CSS</b>. Escribir el código correcto <b>no las destruye: te da 1 bala 🔫</b>. Recién ahí se las mata disparando: <b>1 bala = 1 nave</b>, o acumulás varias y las matás a todas de un tiro.</li>
+          <li><b>Final:</b> al limpiar las 5, se enfurece tanto que <b>detiene el espacio</b> (los puntitos blancos se congelan), abre un <b>portal</b> y desaparece. Ponete abajo del portal (<b>⬅ ➡</b>) para meterte.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🌌',
+      title: 'Galaxia 2 (Nivel 7)',
+      content: `
+        <p>Cruzar el portal te deja en la <b>Nebulosa Violeta</b>: otra galaxia, con su propio color.</p>
+        <ul>
+          <li><b>13 naves</b> enemigas (más que cualquier nivel de la primera galaxia).</li>
+          <li>Bajan <b>con la misma velocidad y el mismo tiempo</b> que las del nivel 1-6: lo que cambia es la cantidad.</li>
+          <li>El <b>cartel de nivel</b> (la descripción de qué hay que destruir) y el fondo del espacio cambian de color a partir de acá, y siguen igual para todos los niveles de la galaxia 2.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '📅',
+      title: 'Reto Diario',
+      content: `
+        <p>Dos desafíos nuevos cada día:</p>
+        <ul>
+          <li><b>Fácil</b> y <b>Difícil</b>, con preguntas distintas para cada uno.</li>
+          <li>Las preguntas se generan con la fecha, así que <b>todos juegan lo mismo</b>.</li>
+          <li>Al completarlo ganás puntos, EXP y sumás a tu <b>racha diaria</b>.</li>
+          <li>Los premios de racha crecen a los 3, 7 y 14 días seguidos.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🎮',
+      title: 'Cómo jugar',
+      content: `
+        <p><b>Niveles 1-3:</b></p>
+        <ol>
+          <li>Formación se mueve de lado a lado (20s gracia, -2s por error).</li>
+          <li>Clic sobre nave para apuntarla.</li>
+          <li>Escribí y <b>ENTER</b>. Destruye todas con esa respuesta.</li>
+          <li>Espacio funciona en chat y no mueve la nave.</li>
+        </ol>
+        <p style="margin-top:12px"><b>Jefes:</b> ver secciones anteriores. Ojo contraseña 👁️ en todos los inputs.</p>
+        <p style="margin-top:12px">Antes de entrar al juego, el <b>tutorial</b> incluye una <b>práctica sin perder vidas</b>: se elige o se escribe la respuesta y el juego muestra al instante si está bien.</p>
+      `
+    },
+    {
+      icon: '🎓',
+      title: 'Tres niveles para aprender',
+      content: `
+        <p>Antes de jugar elegís cuánto sabés de programación. El tutorial, la dificultad y la ayuda cambian según tu elección, y podés cambiarla cuando quieras desde <b>🎓 Mi nivel</b>.</p>
+        <ul>
+          <li><b>🌱 PRINCIPIANTE:</b> para quien nunca programó (chicos y adultos). Tutorial de <b>8 páginas</b> con analogías, glosario, tarjetas con <b>2 ejemplos</b> por etiqueta y práctica guiada. La ayuda usa palabras simples y muestra la respuesta después de <b>2 fallos</b>. Dificultad: <b>Fácil</b> (4 vidas, naves lentas).</li>
+          <li><b>🧭 INTERMEDIO:</b> para quien lo vio una vez y casi no se acuerda (o no le prestó atención en clase 😅). Tutorial de <b>7 páginas</b> con chuleta copiable, <b>2 ejemplos</b> por respuesta y repaso desde cero sin asumir que sabés. La ayuda repite la explicación con pistas y muestra la respuesta al <b>3er fallo</b>. Dificultad: <b>Tranquilo</b> (3 vidas, naves casi normales).</li>
+          <li><b>🚀 AVANZADO:</b> para quien lo vio y sabe un poco, no todo. Tutorial de <b>5 páginas</b> con referencia completa y detalle técnico. La ayuda es directa: definición y respuesta, sin charla. Dificultad: <b>Normal</b> (la del ranking; podés subirla desde 🗺️ NIVELES si querés).</li>
+        </ul>
+        <p>Si no sabés qué elegir, el botón <b>🤷 NO SÉ QUÉ ELEGIR</b> te pone en Principiante automáticamente.</p>
+        <p style="margin-top:10px">Los tres tutoriales incluyen una página de <b>errores típicos</b> (símbolos que faltan, espacios, punto y coma) y ejemplos de “código → cómo se ve”.</p>
+        <p style="margin-top:10px">Cada experiencia arranca con su propia dificultad (Fácil → 🌱 Principiante, Tranquilo → 🧭 Intermedio, Normal → 🚀 Avanzado). Siempre podés cambiarla desde <b>🗺️ NIVELES</b>, que ahora ofrece <b>6 dificultades</b>: Fácil, Tranquilo, Normal, Difícil, Insano e Infierno. Elige la que quieras; el tablero de ranking siempre usa la Normal.</p>
+        <p style="margin-top:10px">🎈 <b>Calentamiento:</b> desde el menú, el tutorial o la grilla de niveles podés jugar una partida corta de <b>6 naves</b> con las etiquetas HTML más fáciles. Tiene 3 vidas como mínimo y no guarda progreso: sirve para probar los 3 pasos sin presión antes del nivel 1.</p>
+      `
+    },
+    {
+      icon: '👥',
+      title: 'Amigos y Chat',
+      content: `
+        <ul>
+          <li><b>Chat Global:</b> en “💬 Chat”, fondo personalizable, scroll no te baja solo.</li>
+          <li><b>Amigos:</b> en “👥 Amigos” buscá por nombre → Enviar solicitud → le llega notificación campanita.</li>
+          <li>Al aceptar → <b>chat privado</b> entre ustedes.</li>
+          <li>Punto verde 🟢 en línea (últimos 5 min), rojo 🔴 desconectado.</li>
+          <li>Eliminar amigo disponible.</li>
+        </ul>
+      `
+    },
+    {
+      icon: '🛒',
+      title: 'Tienda y Personalización',
+      content: `
+        <p><b>Skins</b> (0–500 🪙) + <b>Marcos</b> + <b>Colores de nombre</b> (3000-5000 EXP): blanco, cyan, dorado, rosa, verde, violeta, rojo, arcoíris. Comprar descuenta EXP, equipar cambia tu nombre en chat/ranked. Fondo de chat se guarda en tu cuenta.</p>
+        <p>La tienda tiene <b>una sección para cada cosa</b>: 🚀 <b>Naves</b>, ⚡ <b>Láseres</b> (tu disparo), 💥 <b>Impactos</b> (la explosión al destruir una nave) y 🏷️ <b>Etiquetas</b> (la cajita con el texto de las naves enemigas). Las cuatro se compran con los 🪙 puntos que ganás jugando, y las vistas previas de la tienda se animan con el mismo efecto que ves en el juego.</p>
+      `
+    },
+    {
+      icon: '🏆',
+      title: 'Ranking y Torneo',
+      content: `
+        <p><b>Ranking competitivo:</b> orden por <b>niveles → EXP → intentos</b>. Si empatan niveles gana quien farmeó más EXP.</p>
+        <p><b>Torneo:</b> dura <b>15 días hasta las 00:00</b>. Al finalizar aparece banner profesional animado con confetti y se entregan recompensas (campeón, silver...).</p>
+      `
+    },
+    {
+      icon: '📊',
+      title: 'Niveles',
+      content: `
+        <table class="table" style="margin-top:10px;"><thead><tr><th>Nivel</th><th>Tema</th><th>Modo</th></tr></thead><tbody>
+          <tr><td>1</td><td>HTML básico</td><td>Preguntas (destruir naves)</td></tr>
+          <tr><td>2</td><td>CSS básico</td><td>Preguntas</td></tr>
+          <tr><td>3</td><td>JS básico</td><td>Preguntas</td></tr>
+          <tr><td>4</td><td>👑 JEFE FINAL</td><td>Esquivar + SPACE</td></tr>
+          <tr><td>5</td><td>👑 JEFE CSS</td><td>2 naves CSS + burbujas</td></tr>
+          <tr><td>6</td><td>🤖 JEFE JAVASCRIPT</td><td>3 etapas (HTML → vidas → balas) + portal</td></tr>
+          <tr><td>7</td><td>🌌 GALAXIA 2</td><td>13 preguntas · otro color</td></tr>
+        </tbody></table>
+        <p style="margin-top:10px">QR y Ajustes ahora están dentro del <b>menú del logo 👾</b> arriba a la izquierda.</p>
+      `
+    },
+    {
+      icon: '🔐',
+      title: 'Registro y Perfil',
+      content: `<p>Tema oscuro/claro para todos, pero con cuenta guardás foto, marcos, colores, progreso, EXP, chat privado y fondo.</p>`
+    },
+    {
+      icon: '⚙️',
+      title: 'Detalles técnicos',
+      content: `<ul><li>Canvas 2D 60fps, Node/Express + PostgreSQL (Render) / JSON local, Web Audio API</li><li>Persistencia: usuarios, ranked y chat no se borran al refrescar</li></ul>`
+    }
+  ],
+  init(){ this.render(); },
+  render(){
+    const grid=document.getElementById('docsGrid');
+    if(!grid) return;
+    const tags=['01 · CONCEPTO','02 · MODOS','03 · JEFE FINAL','04 · JEFE CSS','05 · JEFE JAVASCRIPT','06 · GALAXIA 2','07 · RETO DIARIO','08 · CONTROLES','09 · APRENDIZAJE','10 · SOCIAL','11 · TIENDA','12 · RANKING','13 · NIVELES','14 · CUENTA','15 · TECH'];
+    grid.innerHTML=this.sections.map((s,i)=>`
+      <div class="doc-card doc-anim" style="animation-delay:${Math.min(i*0.06,0.6)}s">
+        <p class="doc-kicker">${tags[i]||'MANUAL'}</p>
+        <h3><span class="doc-ico">${s.icon}</span><span>${s.title}</span><span class="doc-num">${String(i+1).padStart(2,'0')}</span></h3>
+        <div class="manual-content">${s.content}</div>
+      </div>
+    `).join('');
+  }
+};
