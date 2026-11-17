@@ -1,7 +1,7 @@
 const QRView = (() => {
   let url = '';
   function getUrl(){
-    return 'https://code-invaders-maj5.onrender.com';
+    return 'https://invaders-junior.onrender.com';
   }
   function init(){
     url = getUrl();
